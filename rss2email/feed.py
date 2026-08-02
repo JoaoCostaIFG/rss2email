@@ -305,6 +305,11 @@ class Feed (object):
             self.url = url
         if to:
             self.to = to
+        # Set when ``run()`` mutates a config-backed attribute (e.g. a
+        # 301 redirect rewrites ``self.url``, or a 410 Gone disables the
+        # feed). Callers can check this to decide whether the on-disk
+        # config needs rewriting so the change survives the next run.
+        self._config_dirty = False
 
     def __str__(self):
         return '{} ({} -> {})'.format(self.name, self.url, self.to)
@@ -464,7 +469,10 @@ class Feed (object):
             _LOG.info('redirect {} from {} to {}'.format(
                     self.name, self.url, parsed['url']))
             self.url = parsed['url']
-            # TODO: `url` is not saved -- add config option to call feeds.save_config() in run command
+            self._config_dirty = True
+            _LOG.info(
+                'feed {} URL updated to {}; the new URL will be written '
+                'to the config on save'.format(self.name, self.url))
         elif status == 304:
             _LOG.info('skipping {}: feed {} was not modified since last update'.format(
                     self.name, self.url))
@@ -473,7 +481,10 @@ class Feed (object):
             _LOG.warning('deactivate {} because {} is gone'.format(
                     self.name, self.url))
             self.active = False
-            # TODO: `active` is not saved -- add config option to call feeds.save_config() in run command
+            self._config_dirty = True
+            _LOG.warning(
+                'feed {} deactivated (HTTP 410 Gone); the deactivation '
+                'will be written to the config on save'.format(self.name))
             return
         elif status >= 400:
             raise _error.HTTPError(status=status, feed=self)

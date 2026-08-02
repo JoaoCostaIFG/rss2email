@@ -100,6 +100,17 @@ def run(feeds, args):
                 last_server = current_server
     finally:
         feeds.save_feeds()
+        # Persist any config-backed mutations made by ``Feed.run()``
+        # (today: a 301/308 redirect rewrites ``feed.url``, and a 410
+        # Gone sets ``feed.active = False``). Without this, the change
+        # lives only in the in-memory Feed, so the next run still hits
+        # the old URL / re-activates the gone feed. Only call
+        # ``save_config`` when at least one feed is actually dirty, so
+        # we don't rewrite (and lose comments/formatting in) the user's
+        # config file on every cron tick.
+        if any(getattr(feed, '_config_dirty', False) for feed in feeds):
+            _LOG.info('persisting config changes (feed URL/active mutations)')
+            feeds.save_config()
 
 def list(feeds, args):
     "List all the feeds in the database"
