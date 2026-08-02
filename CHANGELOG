@@ -5,6 +5,12 @@ UNRELEASED
       message (as the documented contract describes) had no effect; only
       hooks that mutated the message in place (like the bundled
       ``downcase``) appeared to work.
+    * Tighten the feed-HTML sanitizer: strip ``<svg>`` and ``<math>``
+      (both can carry executable content) and treat ``/`` as an attribute
+      separator when removing ``on*`` event handlers, so filter-evasion
+      payloads like ``<img/onerror=alert(1)>`` and
+      ``<svg/onload=alert(1)>`` are now caught instead of passing through
+      to the outbound mail body.
     * Support sending mail via LMTP
     * Fix broken exception handlers that referenced `html.parser.HTMLParseError`
       (removed in Python 3.5) and `IOError` (alias of `OSError` since 3.3);

@@ -107,14 +107,18 @@ _feedparser.PREFERRED_XML_PARSERS = []
 # exact rendered bytes, and a parser-based sanitizer would re-quote
 # attributes / reorder things and churn every fixture).
 _STRIP_PAIRED = _re.compile(
-    r'<\s*(script|iframe|object|embed|applet|meta|link|base|style|form)\b[^>]*>.*?<\s*/\s*\1\s*>',
+    r'<\s*(script|iframe|object|embed|applet|meta|link|base|style|form|svg|math)\b[^>]*>.*?<\s*/\s*\1\s*>',
     _re.IGNORECASE | _re.DOTALL)
 _STRIP_ORPHAN = _re.compile(
-    r'<\s*/?\s*(script|iframe|object|embed|applet|meta|link|base|style|form)\b[^>]*/?>',
+    r'<\s*/?\s*(script|iframe|object|embed|applet|meta|link|base|style|form|svg|math)\b[^>]*/?>',
     _re.IGNORECASE)
 # Event-handler attributes: ``on*="..."`` (onclick, onerror, onload, ...).
+# HTML5 treats ``/`` as an attribute separator just like whitespace, so
+# filter-evasion payloads such as ``<img/onerror=alert(1)>`` or
+# ``<svg/onload=alert(1)>`` must be caught here too -- a whitespace-only
+# separator misses them.
 _STRIP_ON_ATTR = _re.compile(
-    r'\s+on[a-zA-Z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)',
+    r'[\s/]+on[a-zA-Z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)',
     _re.IGNORECASE)
 # ``href``/``src`` (and friends) pointing at dangerous schemes.
 _URL_ATTR = _re.compile(
@@ -135,6 +139,16 @@ def _sanitize_html(body):
     '<a href="">x</a>'
     >>> _sanitize_html('<script>alert(1)</script>after')
     'after'
+    >>> _sanitize_html('<img src=x onerror=alert(1)>')
+    '<img src=x>'
+    >>> _sanitize_html('<img/onerror=alert(1) src=x>')
+    '<img src=x>'
+    >>> _sanitize_html('<svg/onload=alert(1)>')
+    ''
+    >>> _sanitize_html('<svg><script>alert(1)</script></svg>')
+    ''
+    >>> _sanitize_html('<math><mtext>x</mtext></math>')
+    ''
     """
     if not body:
         return body
