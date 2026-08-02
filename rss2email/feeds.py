@@ -127,6 +127,7 @@ class Feeds (list):
 
     Cleanup the temporary directory.
 
+    >>> feeds.close()
     >>> tmpdir.cleanup()
     """
     datafile_version = 2
@@ -144,6 +145,7 @@ class Feeds (list):
             config = _config.CONFIG
         self.config = config
         self.datafile = None
+        self._lockfile = None
 
     def __getitem__(self, key):
         for feed in self:
@@ -155,12 +157,8 @@ class Feeds (list):
             raise IndexError(key) from e
         return super(Feeds, self).__getitem__(index)
 
-    def __append__(self, feed):
-        feed.load_from_config(self.config)
-        feed = super(Feeds, self).append(feed)
-
-    def __pop__(self, index=-1):
-        feed = super(Feeds, self).pop(index=index)
+    def pop(self, index=-1):
+        feed = super(Feeds, self).pop(index)
         if feed.section in self.config:
             self.config.pop(feed.section)
         return feed
@@ -192,8 +190,11 @@ class Feeds (list):
             self.config.pop(feed.section)
 
     def clear(self):
+        # Bypass our config-cleaning ``pop`` override: clearing the in-memory
+        # feed list is independent of the config sections (the source of
+        # truth for config), which are reconciled separately below.
         while self:
-            self.pop(0)
+            super(Feeds, self).pop(0)
 
     def _get_configfiles(self):
         """Get configuration file paths
@@ -251,17 +252,23 @@ class Feeds (list):
         except IOError as e:
             raise _error.DataFileError(feeds=self) from e
 
+        # Acquire an exclusive lock on a sidecar lockfile so concurrent
+        # ``r2e run`` and ``r2e web`` instances cannot interleave their
+        # read+save lifecycle and silently lose ``seen``-state updates.
+        # ``lockf`` locks are tied to an inode, and ``save_feeds`` swaps the
+        # datafile's inode with ``os.replace``; locking the datafile itself
+        # would let a second process lock the *new* (replaced) file while
+        # the first still holds the *old* inode. The sidecar lockfile is
+        # never replaced, so the lock survives for the full lifecycle.
         if UNIX:
-            _fcntl.lockf(self.datafile, _fcntl.LOCK_SH)
+            self._acquire_lockfile()
 
         self.clear()
 
-        level = _LOG.level
-        handlers = list(_LOG.handlers)
         feeds = []
         try:
             data = _json.load(self.datafile)
-        except ValueError as e:
+        except ValueError:
             _LOG.info('could not load data file using JSON')
             data = self._load_pickled_data(self.datafile)
         version = data.get('version', None)
@@ -276,8 +283,6 @@ class Feeds (list):
                     message='missing feed name in datafile {}'.format(
                         self.datafile_path))
             feeds.append(feed)
-        _LOG.setLevel(level)
-        _LOG.handlers = handlers
         self.extend(feeds)
 
         for feed in self:
@@ -299,13 +304,38 @@ class Feeds (list):
             return order[feed.name]
         self.sort(key=key)
 
+    def _acquire_lockfile(self):
+        lockfile_path = self.datafile_path + '.lock'
+        try:
+            self._lockfile = open(lockfile_path, 'w')
+            _fcntl.lockf(self._lockfile, _fcntl.LOCK_EX)
+            _LOG.debug('acquired datafile lock {}'.format(lockfile_path))
+        except OSError as e:
+            if self._lockfile is not None:
+                self._lockfile.close()
+                self._lockfile = None
+            raise _error.DataFileError(feeds=self) from e
+
     def close(self):
+        if self._lockfile is not None:
+            self._lockfile.close()
+            self._lockfile = None
         if self.datafile is not None:
             self.datafile.close()
             self.datafile = None
 
     def _load_pickled_data(self, stream):
-        _LOG.info('try and load data file using Pickle')
+        if _os.environ.get('R2E_LEGACY_PICKLE', '') != '1':
+            raise _error.DataFileError(
+                feeds=self,
+                message=(
+                    'refusing to load a legacy pickled data file for safety; '
+                    're-run with R2E_LEGACY_PICKLE=1 to allow arbitrary-code '
+                    'deserialization, or convert the file with an older '
+                    'rss2email release first'))
+        _LOG.warning(
+            'loading a legacy pickled data file (R2E_LEGACY_PICKLE=1); '
+            'arbitrary-code deserialization is permitted for this load')
         with open(self.datafile_path, 'rb') as f:
             feeds = list(feed.get_state() for feed in _pickle.load(f))
         return {
@@ -334,7 +364,7 @@ class Feeds (list):
         if dirname and not _os.path.isdir(dirname):
             _os.makedirs(dirname, mode=0o700, exist_ok=True)
         tmpfile = dst_config_file + '.tmp'
-        with open(tmpfile, 'w') as f:
+        with _codecs.open(tmpfile, 'w', self.datafile_encoding) as f:
             self.config.write(f)
             f.flush()
             _os.fsync(f.fileno())
@@ -350,14 +380,13 @@ class Feeds (list):
             self._save_feed_states(feeds=self, stream=f)
             f.flush()
             _os.fsync(f.fileno())
-        if UNIX:
-            # Replace the file, then release the lock by closing the old one.
-            _os.replace(tmpfile, self.datafile_path)
-            self.close()  # release the lock
-        else:
-            # On Windows we cannot replace the file while it is opened. And we have no lock.
-            self.close()
-            _os.replace(tmpfile, self.datafile_path)
+        # On Windows we cannot replace the file while it is open, so close
+        # the reader first. On UNIX the sidecar LOCK_EX (self._lockfile)
+        # protects the swap; the datafile reader stays open until ``close``.
+        if not UNIX and self.datafile is not None:
+            self.datafile.close()
+            self.datafile = None
+        _os.replace(tmpfile, self.datafile_path)
 
     def _save_feed_states(self, feeds, stream):
         _json.dump(
