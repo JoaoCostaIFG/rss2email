@@ -1,0 +1,49 @@
+# Example docker-compose deployment for the rss2email web UI.
+#
+# The container runs as an unprivileged user (UID/GID 1000) with a
+# read-only root filesystem; only the bind-mounted ./rss2email-data
+# directory and a tmpfs /tmp are writable.
+#
+# Before starting, create the data directory on the host and make it
+# owned by UID/GID 1000 so the in-container user can read and write it:
+#
+#     mkdir -p rss2email-data
+#     chown -R 1000:1000 rss2email-data
+#
+# Then:
+#
+#     docker compose up -d
+#
+# The web UI will be available at http://localhost:8080. It has no
+# authentication -- bind it to 127.0.0.1 or put it behind a VPN/reverse
+# proxy if you need remote access. See `r2e help web` for options.
+
+services:
+  rss2email-web:
+    build: .
+    image: rss2email:local
+    container_name: rss2email-web
+    restart: unless-stopped
+
+    # Run as the unprivileged UID/GID 1000 user created in the image.
+    user: "1000:1000"
+
+    # The root filesystem is read-only. Only the bind mount below and
+    # the tmpfs /tmp are writable, which limits what a compromised
+    # process can touch.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+    # docker sends SIGTERM on `docker stop`; rss2email's web server
+    # handles SIGTERM and shuts down cleanly, so no init shim is needed.
+
+    ports:
+      - "8080:8080"
+
+    volumes:
+      # Single bind mount covering config + feed database.
+      #   config: ./rss2email-data/config/rss2email.cfg
+      #   data:   ./rss2email-data/data/rss2email.json
+      # Both are created on first use by the entrypoint.
+      - ./rss2email-data:/data

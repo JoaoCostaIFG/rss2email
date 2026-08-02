@@ -1,0 +1,25 @@
+# Build context cruft that would otherwise needlessly invalidate layers
+# or bloat the image.
+
+.git
+.github
+.gitignore
+.mailmap
+.travis.yml
+.update-copyright.conf
+.dockerignore
+Dockerfile
+docker-compose.yml
+shell.nix
+nix
+.venv
+__pycache__
+build
+dist
+MANIFEST
+rss2email-data
+# The test suite and HACKING notes are dev-only; the image ships the
+# runtime app plus its man page / shell completion.
+test
+HACKING.md
+AGENTS.md
