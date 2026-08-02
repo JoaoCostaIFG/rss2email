@@ -61,7 +61,6 @@ from email.utils import formataddr as _formataddr
 from email.utils import formatdate as _formatdate
 from email.utils import parseaddr as _parseaddr
 import hashlib as _hashlib
-import html.parser as _html_parser
 import re as _re
 import socket as _socket
 import time as _time
@@ -69,6 +68,7 @@ import urllib.request as _urllib_request
 import uuid as _uuid
 import xml.sax as _sax
 import xml.sax.saxutils as _saxutils
+import zlib as _zlib
 from functools import lru_cache
 from typing import Optional, Dict, Any, Tuple
 
@@ -85,7 +85,6 @@ from . import error as _error
 from . import util as _util
 
 
-_urllib_request.install_opener(_urllib_request.build_opener())
 _SOCKET_ERRORS = []
 for e in ['error', 'herror', 'gaierror']:
     if hasattr(_socket, e):
@@ -412,7 +411,7 @@ class Feed (object):
             self.url = parsed['url']
             # TODO: `url` is not saved -- add config option to call feeds.save_config() in run command
         elif status == 304:
-            _LOG.info('skipping {}: feed was not modified since last update'.format(
+            _LOG.info('skipping {}: feed {} was not modified since last update'.format(
                     self.name, self.url))
             return
         elif status == 410:
@@ -456,10 +455,13 @@ class Feed (object):
         elif isinstance(exc, _SOCKET_ERRORS):
             _LOG.error('{}: {}'.format(exc, self))
             warned = True
-        elif isinstance(exc, _feedparser.http.zlib.error):
+        elif isinstance(exc, _zlib.error):
             _LOG.error('broken compression: {}'.format(self))
             warned = True
-        elif isinstance(exc, (IOError, AttributeError)):
+        elif isinstance(exc, AttributeError):
+            # feedparser occasionally raises AttributeError on malformed
+            # feeds; surface non-feedparser attribute errors via the
+            # generic ``processing error`` branch below by re-raising them.
             _LOG.error('{}: {}'.format(exc, self))
             warned = True
         elif isinstance(exc, KeyboardInterrupt):
@@ -491,7 +493,10 @@ class Feed (object):
         self.config.setup_html2text(section=self.section)
         try:
             return _html2text.html2text(html=html, baseurl=baseurl)
-        except _html_parser.HTMLParseError as e:
+        except Exception as e:
+            # html2text raises various parser errors; fall back to the
+            # caller's default when one is provided, otherwise re-raise so
+            # the real failure surfaces instead of being masked.
             if default is not None:
                 return default
             raise
@@ -889,7 +894,7 @@ class Feed (object):
             if content['type'] in ('text/html', 'application/xhtml+xml'):
                 try:
                     lines = [self._html2text(content['value'])]
-                except _html_parser.HTMLParseError as e:
+                except Exception:
                     raise _error.ProcessingError(parsed=None, feed=self)
             else:
                 lines = [content['value']]
