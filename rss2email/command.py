@@ -174,12 +174,15 @@ def opmlimport(feeds, args):
         _LOG.info('importing feeds from stdin')
         f = _sys.stdin
     try:
-        dom = _minidom.parse(f)
-        new_feeds = dom.getElementsByTagName('outline')
-    except Exception as e:
-        raise _error.OPMLReadError() from e
-    if args.file:
-        f.close()
+        try:
+            dom = _minidom.parse(f)
+        except Exception as e:
+            raise _error.OPMLReadError() from e
+    finally:
+        # Don't close stdin; only the user-supplied file is ours.
+        if args.file:
+            f.close()
+    new_feeds = dom.getElementsByTagName('outline')
     name_slug_regexp = _re.compile(r'[^\w\d.-]+')
     for feed in new_feeds:
         if feed.hasAttribute('xmlUrl'):
@@ -202,26 +205,29 @@ def opmlexport(feeds, args):
     else:
         _LOG.info('exporting feeds to stdout')
         f = _sys.stdout.buffer
-    f.write(
-        b'<?xml version="1.0" encoding="UTF-8"?>\n'
-        b'<opml version="1.0">\n'
-        b'<head>\n'
-        b'<title>rss2email OPML export</title>\n'
-        b'</head>\n'
-        b'<body>\n')
-    for feed in feeds:
-        if not feed.url:
-            _LOG.debug('dropping {}'.format(feed))
-            continue
-        name = _saxutils.escape(feed.name)
-        url = _saxutils.escape(feed.url)
-        f.write('<outline type="rss" text="{}" xmlUrl="{}"/>\n'.format(
-                name, url).encode())
-    f.write(
-        b'</body>\n'
-        b'</opml>\n')
-    if args.file:
-        f.close()
+    try:
+        f.write(
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<opml version="1.0">\n'
+            b'<head>\n'
+            b'<title>rss2email OPML export</title>\n'
+            b'</head>\n'
+            b'<body>\n')
+        for feed in feeds:
+            if not feed.url:
+                _LOG.debug('dropping {}'.format(feed))
+                continue
+            name = _saxutils.escape(feed.name)
+            url = _saxutils.escape(feed.url)
+            f.write('<outline type="rss" text="{}" xmlUrl="{}"/>\n'.format(
+                    name, url).encode())
+        f.write(
+            b'</body>\n'
+            b'</opml>\n')
+    finally:
+        # Don't close stdout; only the user-supplied file is ours.
+        if args.file:
+            f.close()
 
 def web(feeds, args):
     "Run a local web UI for managing feeds."
