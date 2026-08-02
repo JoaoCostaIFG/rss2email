@@ -114,7 +114,8 @@ class Feeds (list):
 
     >>> feeds[0].to = None
     >>> feeds.save_config()
-    >>> print(open(configfile, 'r').read().rstrip('\\n'))
+    >>> with open(configfile, 'r') as _f:
+    ...     print(_f.read().rstrip('\\n'))
     ... # doctest: +REPORT_UDIFF, +ELLIPSIS
     [DEFAULT]
     from = user@rss2email.invalid
