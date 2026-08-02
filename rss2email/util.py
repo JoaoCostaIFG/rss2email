@@ -42,11 +42,11 @@ class TimeLimitedFunction (_threading.Thread):
     >>> TimeLimitedFunction('sleeping', 0.5, sleeping_return)(10, 'y')
     Traceback (most recent call last):
       ...
-    rss2email.error.TimeoutError: 0.5 second timeout exceeded in sleeping
+    rss2email.error.FeedTimeoutError: 0.5 second timeout exceeded in sleeping
     >>> TimeLimitedFunction('sleep', 0.5, time.sleep)('x') # doctest: +ELLIPSIS
     Traceback (most recent call last):
       ...
-    rss2email.error.TimeoutError: error while running time limited function in sleep: ...
+    rss2email.error.FeedTimeoutError: error while running time limited function in sleep: ...
     """
     def __init__(self, name, timeout, target, **kwargs):
         super(TimeLimitedFunction, self).__init__(target=target, daemon=True, **kwargs)
@@ -63,7 +63,7 @@ class TimeLimitedFunction (_threading.Thread):
         try:
             if self._target:
                 self.result = self._target(*self._args, **self._kwargs)
-        except:
+        except Exception:
             self.error = _sys.exc_info()
         finally:
             # Avoid a refcycle if the thread is running a function with
@@ -76,10 +76,10 @@ class TimeLimitedFunction (_threading.Thread):
         self.start()
         self.join(self.timeout)
         if self.error:
-            raise _error.TimeoutError(
+            raise _error.FeedTimeoutError(
                 time_limited_function=self) from self.error[1]
         elif self.is_alive():
-            raise _error.TimeoutError(time_limited_function=self)
+            raise _error.FeedTimeoutError(time_limited_function=self)
         return self.result
 
 

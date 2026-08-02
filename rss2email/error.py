@@ -32,12 +32,13 @@ from . import __version__, __url__, __email__
 
 import pprint as _pprint
 
-import feedparser as _feedparser
-import html2text as _html2text
-
 
 class RSS2EmailError (Exception):
-    def __init__(self, message):
+    def __init__(self, message, **_kwargs):
+        # Accept and ignore leftover keyword arguments so subclasses can
+        # forward their unused ``**kwargs`` up the chain without exploding
+        # here when, e.g., a multiple-inheritance class receives both
+        # ``feed=`` and ``feeds=``.
         super(RSS2EmailError, self).__init__(message)
 
     def log(self):
@@ -46,7 +47,7 @@ class RSS2EmailError (Exception):
             _LOG.error('cause: {}'.format(self.__cause__))
 
 
-class TimeoutError (RSS2EmailError):
+class FeedTimeoutError (RSS2EmailError):
     def __init__(self, time_limited_function):
         if time_limited_function.error is not None:
             message = (
@@ -55,7 +56,7 @@ class TimeoutError (RSS2EmailError):
         else:
             message = '{} second timeout exceeded in {}'.format(
                 time_limited_function.timeout, time_limited_function.name)
-        super(TimeoutError, self).__init__(message=message)
+        super(FeedTimeoutError, self).__init__(message=message)
         self.time_limited_function = time_limited_function
 
 
@@ -181,7 +182,7 @@ class ProcessingError (FeedError):
 
     def log(self):
         super(ProcessingError, self).log()
-        if type(self) == ProcessingError:  # not a more specific subclass
+        if type(self) is ProcessingError:  # not a more specific subclass
             _LOG.warning(
                 '=== rss2email encountered a problem with this feed ===')
             _LOG.warning(
@@ -190,14 +191,45 @@ class ProcessingError (FeedError):
             _LOG.warning(
                 '=== If this occurs repeatedly, send this to {} ==='.format(
                     __email__))
-            _LOG.warning(
-                'error: {} {}'.format(
-                    self.parsed.get('bozo_exception', "can't process"),
-                    self.feed.url))
-            _LOG.warning(_pprint.pformat(self.parsed))
+            parsed = self.parsed
+            if parsed is None:
+                _LOG.warning(
+                    'error: (no parsed feed) {}'.format(self.feed.url))
+                summary = None
+            else:
+                _LOG.warning(
+                    'error: {} {}'.format(
+                        parsed.get('bozo_exception', "can't process"),
+                        self.feed.url))
+                # Avoid dumping the entire parsed feed (which may contain
+                # full entries, cookies, or auth tokens set by feedparser
+                # handlers) into the log. Log only the diagnostic fields.
+                try:
+                    headers = parsed.get('headers')
+                    summary = {
+                        'version': parsed.get('version'),
+                        'status': getattr(parsed, 'status', None),
+                        'bozo': getattr(parsed, 'bozo', None),
+                        'bozo_exception': parsed.get('bozo_exception'),
+                        'headers': dict(headers) if headers else None,
+                        'n_entries': len(parsed.get('entries', []))
+                                     if parsed.get('entries') is not None
+                                     else 0,
+                        }
+                except Exception:
+                    summary = '<could not summarize parsed feed>'
+            _LOG.warning(_pprint.pformat(summary))
             _LOG.warning('rss2email {}'.format(__version__))
-            _LOG.warning('feedparser {}'.format(_feedparser.__version__))
-            _LOG.warning('html2text {}'.format(_html2text.__version__))
+            try:
+                import feedparser as _feedparser
+                _LOG.warning('feedparser {}'.format(_feedparser.__version__))
+            except Exception as e:
+                _LOG.warning('feedparser <unavailable: {}>'.format(e))
+            try:
+                import html2text as _html2text
+                _LOG.warning('html2text {}'.format(_html2text.__version__))
+            except Exception as e:
+                _LOG.warning('html2text <unavailable: {}>'.format(e))
             _LOG.warning('Python {}'.format(_sys.version))
             _LOG.warning('=== END HERE ===')
 
