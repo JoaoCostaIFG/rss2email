@@ -182,26 +182,73 @@ def _write_html(self, body, status=200):
 
 def _parse_form(self):
     length = int(self.headers.get('Content-Length', 0) or 0)
-    raw = self.rfile.read(length) if length else b''
-    parsed = _urlparse.parse_qs(raw.decode('utf-8'), keep_blank_values=True)
+    if length > _MAX_FORM_BYTES:
+        raise _feeds_error_renderer(
+            'Form body too large ({} bytes; limit {} bytes).'.format(
+                length, _MAX_FORM_BYTES))
+    if length:
+        try:
+            raw = self.rfile.read(length)
+        except Exception:
+            raise _feeds_error_renderer('Could not read form body.')
+    else:
+        raw = b''
+    try:
+        text = raw.decode('utf-8', errors='replace')
+    except Exception:
+        text = raw.decode('latin-1', errors='replace')
+    parsed = _urlparse.parse_qs(text, keep_blank_values=True)
     return {k: (v[0] if v else '') for k, v in parsed.items()}
 
 
 def _is_csrf_safe(self):
-    "Reject cross-origin browser POSTs (CSRF defense for the unauthed UI)."
-    # Browsers always send `Origin` on cross-origin form POSTs (and on
-    # same-origin ones, in modern browsers). Non-browser clients (curl,
-    # the test suite) may omit it; absent Origin + absent Referer means
-    # "not a browser", which we allow. If either header is present it
-    # must point back at this server.
-    host = self.headers.get('Host', '')
+    """Reject cross-origin browser POSTs (CSRF defense for the unauthed UI).
+
+    Browsers always send ``Origin`` on cross-origin form POSTs (and on
+    same-origin ones, in modern browsers). Non-browser clients (curl,
+    the test suite) may omit it; absent Origin + absent Referer means
+    "not a browser", which we allow. If either header is present it
+    must point back at this server.
+
+    We compare the request's Origin/Referer host+port against the
+    server's *own* bound address (``self.server.server_address``),
+    not the client-supplied ``Host`` header. A same-browser attacker
+    page can forge matching ``Host``+``Origin`` headers, so trusting
+    ``Host`` provides no defense.
+    """
+    exp_host, exp_port = self.server.server_address[:2]
+    # When bound to the wildcard address we don't know which interface
+    # the client actually used; accept any host and rely on the port.
+    if exp_host in ('0.0.0.0', '::', ''):
+        exp_host = None
+
+    def _matches_self(url):
+        if not url:
+            return False
+        try:
+            parts = _urlparse.urlsplit(url)
+        except ValueError:
+            return False
+        host = parts.hostname
+        port = parts.port  # None if not specified
+        if host is None:
+            return False
+        if exp_host is not None and host != exp_host:
+            return False
+        if port is not None and port != exp_port:
+            return False
+        return True
+
     origin = self.headers.get('Origin')
-    if origin is not None:
-        return _urlparse.urlparse(origin).netloc == host
+    if origin:  # may legitimately be '' (empty); treat empties as absent
+        return _matches_self(origin)
     referer = self.headers.get('Referer')
-    if referer is not None:
-        return _urlparse.urlparse(referer).netloc == host
+    if referer:
+        return _matches_self(referer)
     return True
+
+
+_MAX_FORM_BYTES = 1 * 1024 * 1024  # 1 MiB; admin-UI form bodies are tiny
 
 
 def make_handler(configfiles, datafile_path, write_lock):
