@@ -24,7 +24,6 @@
 """
 
 import logging as _logging
-import sys as _sys
 
 
 __version__ = '3.14'
@@ -37,13 +36,8 @@ LOG = _logging.getLogger('rss2email')
 LOG.addHandler(_logging.StreamHandler())
 LOG.setLevel(_logging.ERROR)
 
-
-min_python_version = (3, 5)
-if _sys.version_info < min_python_version:
-    raise ImportError(
-        "rss2email requires Python {maj}.{min} or newer, but you're using:\n{got}"
-        .format(
-            maj=min_python_version[0],
-            min=min_python_version[1],
-            got=_sys.version
-        ))
+# The supported Python range is declared via ``requires-python`` in
+# ``pyproject.toml``; the packaging metadata is the source of truth and
+# pip refuses to install on older interpreters. A runtime check here is
+# both redundant and a maintenance hazard (it drifted to (3, 5) while the
+# project required 3.8+).
