@@ -41,8 +41,14 @@ LOG = _logging.getLogger(__name__)
 
 def process(feed, parsed, entry, guid, message):
     # decode message
-    encoding = message.get_charsets()[0]
-    content = str(message.get_payload(decode=True), encoding)
+    charsets = message.get_charsets()
+    encoding = charsets[0] if charsets else None
+    if encoding is None:
+        encoding = 'utf-8'
+    try:
+        content = str(message.get_payload(decode=True), encoding)
+    except (LookupError, UnicodeDecodeError):
+        content = str(message.get_payload(decode=True), 'utf-8', errors='replace')
 
     links = []
 
@@ -60,16 +66,24 @@ def process(feed, parsed, entry, guid, message):
     # Remove the redirect and modify the content
     timeout = rss2email.config.CONFIG['DEFAULT'].getint('feed-timeout')
     proxy = rss2email.config.CONFIG['DEFAULT']['proxy']
+    if proxy:
+        proxy_handler = urllib.request.ProxyHandler(
+            {'http': proxy, 'https': proxy})
+        opener = urllib.request.build_opener(proxy_handler)
+    else:
+        opener = urllib.request.build_opener()
     for link in links:
         try:
             request = urllib.request.Request(link)
             request.add_header('User-agent', feed.user_agent)
-            direct_link = urllib.request.urlopen(request).geturl()
+            direct_link = opener.open(request, timeout=timeout).geturl()
         except Exception as e:
             LOG.warning('could not follow redirect for {}: {}'.format(
                 link, e))
             continue
-        content = re.sub(re.escape(link), direct_link, content)
+        # Replace only the first occurrence; a global replace could mangle
+        # text that merely mentions the link URL.
+        content = re.sub(re.escape(link), direct_link, content, count=1)
 
     # clear CTE and set message. It can be important to clear the CTE
     # before setting the payload, since the payload is only re-encoded

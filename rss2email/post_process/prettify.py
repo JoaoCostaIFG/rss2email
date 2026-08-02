@@ -65,8 +65,14 @@ process
 """
 
 
-# import modules you need
-from bs4 import BeautifulSoup
+# import modules you need. ``beautifulsoup4`` is NOT a runtime
+# dependency of rss2email; install it explicitly (e.g. via the
+# ``prettify`` extra) before enabling this hook:
+#
+#     pip install beautifulsoup4
+#
+# The import is deferred to hook-call time so that simply having the
+# hook on disk doesn't break environments that lack bs4.
 import rss2email.email
 
 
@@ -77,12 +83,23 @@ def pretty(feed, parsed, entry, guid, message):
     string and then calls BeautifulSoup on it and afterwards encodes
     the feed entry
     """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as e:
+        raise ImportError(
+            'rss2email.post_process.prettify requires the optional '
+            '"beautifulsoup4" package; install it to use this hook'
+        ) from e
+
     # decode message
-    encoding = message.get_charsets()[0]
+    charsets = message.get_charsets()
+    encoding = charsets[0] if charsets else None
+    if encoding is None:
+        encoding = 'utf-8'
     content = str(message.get_payload(decode=True), encoding)
 
     # modify content
-    soup = BeautifulSoup(content)
+    soup = BeautifulSoup(content, 'html.parser')
     content = soup.prettify()
 
     # BeautifulSoup uses unicode, so we perhaps have to adjust the encoding.

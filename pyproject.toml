@@ -37,6 +37,9 @@ r2e = "rss2email.main:run"
 dev = [
     "update-copyright>=0.6.2",
 ]
+prettify = [
+    "beautifulsoup4>=4.6",
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
