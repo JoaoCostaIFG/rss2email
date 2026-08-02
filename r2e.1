@@ -122,6 +122,23 @@ the data from stdin.
 Export all feeds to OPML.  \fI<path>\fR is the file to which the OPML
 data will be written.  If \fI<path>\fR is not given \fBr2e\fR writes
 the data to stdout.
+.TP
+.B web \fR[\fI\-H <host>\fR] [\fI\-p <port>\fR]
+Run a small local web UI for managing feeds (listing, adding, deleting,
+pausing and unpausing), so that you do not have to \fBssh\fR in to run
+\fBr2e\fR commands by hand.  It reuses the same on-disk config and data
+files as the rest of \fBr2e\fR and coexists with a cron-driven
+\fBrun\fR job.
+.P
+.RS 4
+The UI has no authentication: bind it to \fB127.0.0.1\fR (the default)
+or run it behind your VPN.  Cross-origin browser POSTs are rejected
+(CSRF defense), so a web page open in your browser cannot drive the
+local UI.  \fB\-H\fR/\fB\-\-host\fR selects the
+interface to bind to and \fB\-p\fR/\fB\-\-port\fR the TCP port
+(default 8080).  The server runs in the foreground; stop it with
+\fBSIGINT\fR/\fBSIGTERM\fR.
+.RE
 .SH "CONFIGURATION"
 The program's behavior can be controlled via the
 \fI$XDG_CONFIG_HOME/rss2email.cfg\fR

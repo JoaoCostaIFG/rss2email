@@ -11,14 +11,19 @@ import platform
 import re as _re
 import multiprocessing
 import subprocess
+import threading
 import unittest
 import mailbox
+import http.client as _httpclient
 import http.server
+import signal as _signal
+import socket as _socket
 import time
 import sys
 import json
 from pathlib import Path
 from typing import List
+from urllib.parse import urlencode as _urlencode
 
 sys.path.insert(0, _os.path.dirname(__file__))
 from util.execcontext import r2e_path, ExecContext
@@ -573,6 +578,258 @@ class TestOPML(unittest.TestCase):
                 content = json.load(f)
 
             self.assertEqual(content["feeds"][0]["name"], self.feed_name)
+
+
+class TestWeb(unittest.TestCase):
+    "Exercise the `r2e web` management UI"
+    def setUp(self):
+        "Starts the r2e web server on an ephemeral port against a temp db"
+        self.ctx = ExecContext("[DEFAULT]\nto = me@example.com")
+        self.ctx.__enter__()
+        sock = _socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        self.port = sock.getsockname()[1]
+        sock.close()
+        self.proc = subprocess.Popen(
+            [sys.executable, r2e_path,
+             '-c', str(self.ctx.cfg_path),
+             '-d', str(self.ctx.data_path),
+             'web', '-p', str(self.port), '-H', '127.0.0.1'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True)
+        # wait for the server to accept connections
+        for _ in range(100):
+            try:
+                c = _httpclient.HTTPConnection('127.0.0.1', self.port)
+                c.request('GET', '/')
+                r = c.getresponse()
+                r.read()
+                c.close()
+                return
+            except OSError:
+                time.sleep(0.05)
+        raise AssertionError('r2e web server did not start:\n' +
+                             ''.join(self.proc.stderr.readlines() or []))
+
+    def tearDown(self):
+        self.proc.send_signal(_signal.SIGINT)
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            if pipe is not None:
+                pipe.close()
+        self.ctx.__exit__(None, None, None)
+
+    def _req(self, method, path, form=None):
+        c = _httpclient.HTTPConnection('127.0.0.1', self.port)
+        body = None
+        headers = {}
+        if form is not None:
+            body = _urlencode(form)
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        c.request(method, path, body=body, headers=headers)
+        r = c.getresponse()
+        data = r.read().decode('utf-8')
+        location = r.getheader('Location')
+        c.close()
+        return r.status, location, data
+
+    def _req_with_headers(self, method, path, headers, form=None):
+        c = _httpclient.HTTPConnection('127.0.0.1', self.port)
+        body = None
+        if form is not None:
+            body = _urlencode(form)
+            headers = dict(headers)
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        c.request(method, path, body=body, headers=headers)
+        r = c.getresponse()
+        data = r.read().decode('utf-8')
+        location = r.getheader('Location')
+        c.close()
+        return r.status, location, data
+
+    def test_empty_list(self):
+        "An empty database renders an empty-state message"
+        status, _, body = self._req('GET', '/')
+        self.assertEqual(status, 200)
+        self.assertIn('no feeds yet', body)
+
+    def test_add_then_list(self):
+        "Adding via POST then GET shows the new feed"
+        status, location, _ = self._req(
+            'POST', '/add', {'name': 'test', 'url': 'https://example.com/feed.xml'})
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/')
+        status, _, body = self._req('GET', '/')
+        self.assertEqual(status, 200)
+        # Anchor on the specific row markup (name/url/to land in separate
+        # table cells) so an unrelated 'test' substring elsewhere can't
+        # satisfy this assertion in the future.
+        self.assertIn(
+            '<td>test</td>'
+            '<td class="url">https://example.com/feed.xml</td>'
+            '<td>me@example.com</td>',
+            body)
+        self.assertIn('active', body)
+        # the feed must be persisted to disk and visible to the CLI
+        res = self.ctx.call('list')
+        self.assertIn('test', res.stdout)
+        self.assertEqual(res.returncode, 0)
+
+    def test_add_missing_fields(self):
+        "Adding without a URL renders an inline error (no redirect)"
+        status, _, body = self._req('POST', '/add', {'name': 'justname'})
+        self.assertEqual(status, 200)
+        self.assertIn('required', body)
+
+    def test_add_duplicate(self):
+        "Re-adding an existing name renders an inline error"
+        self.ctx.call('add', 'dup', 'https://example.com/a.xml')
+        status, _, body = self._req(
+            'POST', '/add', {'name': 'dup', 'url': 'https://example.com/b.xml'})
+        self.assertEqual(status, 200)
+        self.assertIn('already exists', body)
+
+    def test_pause_unpause(self):
+        "Pause then unpause toggles the active state"
+        self.ctx.call('add', 'foo', 'https://example.com/foo.xml')
+        # The page rendered when active offers a `pause` button pointing
+        # at /pause (not /unpause); clicking it must mark the feed paused.
+        _, _, body = self._req('GET', '/')
+        self.assertIn('action="/pause"', body)
+        status, _, _ = self._req('POST', '/pause', {'index': '0'})
+        self.assertEqual(status, 303)
+        _, _, body = self._req('GET', '/')
+        self.assertIn('paused', body)
+        self.assertIn('unpause', body)
+        self.assertIn('action="/unpause"', body)
+        status, _, _ = self._req('POST', '/unpause', {'index': '0'})
+        self.assertEqual(status, 303)
+        _, _, body = self._req('GET', '/')
+        self.assertIn('active', body)
+        self.assertIn('pause', body)
+        self.assertIn('action="/pause"', body)
+
+    def test_delete(self):
+        "Delete removes the feed from the database"
+        self.ctx.call('add', 'doomed', 'https://example.com/doomed.xml')
+        status, _, _ = self._req('POST', '/delete', {'index': '0'})
+        self.assertEqual(status, 303)
+        _, _, body = self._req('GET', '/')
+        self.assertIn('no feeds yet', body)
+        res = self.ctx.call('list')
+        self.assertEqual(res.stdout.strip(), '')
+
+    def test_delete_missing_index(self):
+        "Deleting without an index renders an error instead of crashing"
+        status, _, body = self._req('POST', '/delete')
+        self.assertEqual(status, 200)
+        self.assertIn('selected', body)
+
+    def test_delete_confirm_uses_data_attribute(self):
+        "Delete confirm name is carried via a data-attribute, not inline JS"
+        # Drive the renderer directly with a stub feed whose name contains
+        # JS-string-break-out and </script>-style payloads. This guards the
+        # web UI's XSS defense independently of Feed's own name charset -- if
+        # that charset ever relaxes, the renderer must still escape safely.
+        from rss2email.web import _render_rows_row
+        class _StubFeed:
+            pass
+        f = _StubFeed()
+        f.name = "x'; alert(1); y</script>"
+        f.url = "https://example.com/feed.xml"
+        f.to = "a@b.com"
+        f.active = True
+        out = _render_rows_row(0, f)
+        # The name must NOT be interpolated into an inline JS handler, and
+        # must not be able to break out of the HTML attribute context.
+        self.assertNotIn('onsubmit', out)
+        self.assertIn('data-name=', out)
+        self.assertIn('&#x27;', out)             # quote -> HTML entity
+        self.assertIn('&lt;/script&gt;', out)    # </script> -> escaped
+        # The raw, unescaped payloads must not appear anywhere in the row:
+        self.assertNotIn("x'; alert(1", out)
+        self.assertNotIn("</script>", out)
+        # And the data-attribute value must be quoted (closed) properly.
+        self.assertIn('data-name="x&#x27;; alert(1); y&lt;/script&gt;"', out)
+
+    def test_csrf_rejects_cross_origin_post(self):
+        ("A POST carrying an Origin header whose netloc != the server's "
+         "Host must be rejected (403) with an inline error, not mutate "
+         "state. There is no auth on this UI, so cross-origin browser "
+         "POSTs (the CSRF classic) are the only network attacker we have.")
+        self.ctx.call('add', 'keep', 'https://example.com/feed.xml')
+        # Cross-origin Origin must be refused.
+        status, _, body = self._req_with_headers(
+            'POST', '/delete',
+            {'Host': '127.0.0.1:{}'.format(self.port),
+             'Origin': 'http://evil.example.com'},
+            form={'index': '0'})
+        self.assertEqual(status, 403)
+        self.assertIn('Cross-origin', body)
+        # State must be unchanged: the feed is still there.
+        res = self.ctx.call('list')
+        self.assertIn('keep', res.stdout)
+        # Same-origin Origin (netloc matches Host) is allowed.
+        status, _, _ = self._req_with_headers(
+            'POST', '/delete',
+            {'Host': '127.0.0.1:{}'.format(self.port),
+             'Origin': 'http://127.0.0.1:{}'.format(self.port)},
+            form={'index': '0'})
+        self.assertEqual(status, 303)
+        res = self.ctx.call('list')
+        self.assertEqual(res.stdout.strip(), '')
+
+    def test_concurrent_gets_dont_corrupt_state(self):
+        ("Concurrent GETs alongside POSTs must not crash the server or "
+         "corrupt the in-memory ConfigParser, which is a process-global "
+         "singleton shared by all Feeds instances.")
+        # `r2e web` uses ThreadingHTTPServer, so requests run in separate
+        # threads. The global `rss2email.config.CONFIG` (mutated by every
+        # `Feeds.load()` and `Feeds.save_config()`) is not thread-safe, so
+        # all request handling must be serialized via `write_lock`. This
+        # test reproduces the race that surfaced without serialization
+        # (AttributeError from ConfigParser as its internal state gets
+        # clobbered mid-read) and asserts it stays fixed.
+        self.ctx.call('add', 'foo', 'https://example.com/foo.xml')
+        # Force very frequent thread switching to widen the race window.
+        orig_interval = sys.getswitchinterval()
+        sys.setswitchinterval(0.000005)
+        self.addCleanup(sys.setswitchinterval, orig_interval)
+
+        stop = threading.Event()
+        errors = []
+        def spinner():
+            while not stop.is_set():
+                try:
+                    status, _, _ = self._req('GET', '/')
+                    if status != 200:
+                        errors.append(('GET', status))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(('GET', repr(exc)))
+
+        threads = [threading.Thread(target=spinner, daemon=True)
+                   for _ in range(4)]
+        for t in threads:
+            t.start()
+        try:
+            for _ in range(30):
+                status, _, _ = self._req('POST', '/pause', {'index': '0'})
+                if status != 303:
+                    errors.append(('POST pause', status))
+                status, _, _ = self._req('POST', '/unpause', {'index': '0'})
+                if status != 303:
+                    errors.append(('POST unpause', status))
+        finally:
+            stop.set()
+        for t in threads:
+            t.join(timeout=5)
+        self.assertEqual(errors, [],
+                         'concurrent request errors: {}'.format(errors[:5]))
+
 
 if __name__ == '__main__':
     unittest.main()

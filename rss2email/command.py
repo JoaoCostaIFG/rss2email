@@ -211,3 +211,12 @@ def opmlexport(feeds, args):
         b'</opml>\n')
     if args.file:
         f.close()
+
+def web(feeds, args):
+    "Run a local web UI for managing feeds."
+    from . import web as _web
+    _web.serve(
+        configfiles=feeds.configfiles,
+        datafile_path=feeds.datafile_path,
+        host=args.host,
+        port=args.port)

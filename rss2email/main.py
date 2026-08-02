@@ -164,6 +164,16 @@ def run(*args, **kwargs):
         'file', metavar='PATH', nargs='?',
         help='path for exported OPML (defaults to stdout)')
 
+    web_parser = subparsers.add_parser(
+        'web', help=_command.web.__doc__.splitlines()[0])
+    web_parser.set_defaults(func=_command.web)
+    web_parser.add_argument(
+        '-H', '--host', default='127.0.0.1',
+        help='interface to bind to (defaults to 127.0.0.1)')
+    web_parser.add_argument(
+        '-p', '--port', type=int, default=8080,
+        help='port to listen on (defaults to 8080)')
+
     args = parser.parse_args(*args, **kwargs)
 
     if args.verbose:
@@ -177,8 +187,11 @@ def run(*args, **kwargs):
     if not getattr(args, 'func', None):
         parser.error('too few arguments')
 
-    # Immediately lock so only one r2e instance runs at a time
-    if UNIX:
+    # Immediately lock so only one r2e instance runs at a time. The web
+    # subcommand runs a long-lived server, so it must not hold this
+    # process-global lock (it would block the cron `r2e run` job for the
+    # whole session); per-request Feeds instances handle datafile locking.
+    if args.func is not _command.web and UNIX:
         import fcntl as _fcntl
         from pathlib import Path as _Path
         dir = _os.environ.get("XDG_RUNTIME_DIR")
@@ -197,10 +210,21 @@ def run(*args, **kwargs):
         if not args.config:
             args.config = None
         feeds = _feeds.Feeds(datafile_path=args.data, configfiles=args.config)
-        if args.func != _command.new:
+        # `web` is a long-lived server that manages its own Feeds instances
+        # per request; it only needs `feeds.configfiles` / `.datafile_path`
+        # here, so skip the throwaway startup load (and its short-lived
+        # datafile lock acquisition) for that subcommand.
+        if args.func not in (_command.new, _command.web):
             feeds.load()
         if not args.verbose:
-            _LOG.setLevel(feeds.config['DEFAULT']['verbose'].upper())
+            if args.func is _command.web:
+                # No config loaded for `web` (see above); default to INFO so
+                # the server's startup messages are visible, matching the
+                # `verbose = info` default other subcommands inherit from
+                # the config file.
+                _LOG.setLevel(_logging.INFO)
+            else:
+                _LOG.setLevel(feeds.config['DEFAULT']['verbose'].upper())
         args.func(feeds=feeds, args=args)
     except _error.RSS2EmailError as e:
         e.log()
