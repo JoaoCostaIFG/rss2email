@@ -83,6 +83,73 @@ def guess_encoding(string, encodings=('US-ASCII', 'UTF-8')):
             return encoding
     raise _error.NoValidEncodingError(string=string, encodings=encodings)
 
+
+def _check_header_pair(name, value):
+    """Reject header names/values containing CR or LF (header injection).
+
+    >>> _check_header_pair('Subject', 'hello')
+    >>> _check_header_pair('Subject\\nBcc: evil', 'hello')
+    Traceback (most recent call last):
+      ...
+    ValueError: header name must not contain CR/LF
+    >>> _check_header_pair('Subject', 'ok\\r\\nBcc: evil')
+    Traceback (most recent call last):
+      ...
+    ValueError: header value must not contain CR/LF
+    """
+    if isinstance(name, str) and ('\r' in name or '\n' in name):
+        raise ValueError('header name must not contain CR/LF')
+    if isinstance(value, str) and ('\r' in value or '\n' in value):
+        # str.strip() removes \r/\n only at the edges; bare \r\n in the
+        # middle is the injection vector.
+        raise ValueError('header value must not contain CR/LF')
+
+
+def _split_host_port(server, default_port):
+    """Parse a 'host[:port]' config value, handling IPv6 literals.
+
+    Returns the bare host (without brackets) and an int port.
+
+    >>> _split_host_port('smtp.example.net', 465)
+    ('smtp.example.net', 465)
+    >>> _split_host_port('smtp.example.net:25', 465)
+    ('smtp.example.net', 25)
+    >>> _split_host_port('[::1]:465', 25)
+    ('::1', 465)
+    >>> _split_host_port('[::1]', 25)
+    ('::1', 25)
+    """
+    if server.startswith('['):
+        # e.g. "[::1]:465" or "[::1]"
+        host, sep, port = server[1:].partition(']')
+        if not sep:
+            raise ValueError('unterminated IPv6 literal: {!r}'.format(server))
+        port = port.lstrip(':')
+        return host, (int(port) if port else default_port)
+    if ':' in server:
+        # IPv4 or hostname:port. Use rpartition so a future 'host:name' edge
+        # case splits on the rightmost colon (matching the documented
+        # 'host:port' config form).
+        host, _, port = server.rpartition(':')
+        return host, int(port)
+    return server, default_port
+
+
+def _recipient_to_addrs(recipient):
+    """Return the bare email addresses from a recipient display string.
+
+    ``smtplib.send_message`` calls ``RCPT TO:<addr>`` for each entry, so
+    we must pass parsed bare addresses rather than a naive
+    ``recipient.split(',')`` (which mis-splits quoted display names
+    containing commas).
+
+    >>> _recipient_to_addrs('a@b.com')
+    ['a@b.com']
+    >>> _recipient_to_addrs('"Doe, John" <a@b.com>, c@d.com')
+    ['a@b.com', 'c@d.com']
+    """
+    return [addr for _name, addr in _getaddresses([recipient]) if addr]
+
 def _add_plain_multipart(guid: str, message, html: str):
     headers = message.items()
     msg = MIMEMultipart('alternative')
@@ -91,10 +158,17 @@ def _add_plain_multipart(guid: str, message, html: str):
             continue
         msg[str(name)] = value
 
-    html_part = _MIMEText(html, _subtype='html')
+    # The html alternative must use the same charset as the source body.
+    # ``_MIMEText(html, _subtype='html')`` defaults to us-ascii, which
+    # raises UnicodeEncodeError when flattened for non-ASCII HTML.
+    charset = message.get_content_charset() or 'us-ascii'
+    html_part = _MIMEText(html, _subtype='html', _charset=charset)
     msg.attach(html_part)
 
     text_content = html2text.html2text(html=html, baseurl=guid)
+    # Let MIMEText autodetect (us-ascii when it fits, utf-8 otherwise)
+    # so html2text's occasional non-ASCII output (smart quotes, em
+    # dashes passed through from the source HTML) doesn't raise.
     text_part = _MIMEText(text_content)
     msg.attach(text_part)
     return msg
@@ -163,8 +237,13 @@ def get_message(sender, recipient, subject, body, content_type,
 
     # Create the message ('plain' stands for Content-Type: text/plain)
     message = _MIMEText(body, content_type, body_encoding)
+    _check_header_pair('From', sender)
     message['From'] = sender
+    _check_header_pair('To', ', '.join(recipient_list))
     message['To'] = ', '.join(recipient_list)
+    # Subject may legitimately contain newlines when a feed title spans
+    # multiple lines; sanitize them rather than rejecting the message.
+    subject = subject.replace('\r', ' ').replace('\n', ' ')
     message['Subject'] = _Header(subject, subject_encoding)
     if config.getboolean(section, 'use-8bit'):
         del message['Content-Transfer-Encoding']
@@ -173,6 +252,7 @@ def get_message(sender, recipient, subject, body, content_type,
         message.set_payload(body, charset=charset)
     if extra_headers:
         for key,value in extra_headers.items():
+            _check_header_pair(key, value)
             encoding = guess_encoding(value, ['US-ASCII'] + encodings)
             message[key] = _Header(value, encoding)
     if config.getboolean(section, 'multipart-html'):
@@ -186,14 +266,9 @@ def smtp_send(recipient, message, config=None, section='DEFAULT'):
     if config is None:
         config = _config.CONFIG
     server = config.get(section, 'smtp-server')
-    # Adding back in support for 'server:port'
-    pos = server.find(':')
-    if 0 <= pos:
-        # Strip port out of server name
-        port = int(server[pos+1:])
-        server = server[:pos]
-    else:
-        port = config.getint(section, 'smtp-port')
+    server, port = _split_host_port(
+        server, default_port=config.getint(section, 'smtp-port'))
+    to_addrs = _recipient_to_addrs(recipient)
 
     _LOG.debug('sending message to {} via {}'.format(recipient, server))
     ssl = config.getboolean(section, 'smtp-ssl')
@@ -221,14 +296,16 @@ def smtp_send(recipient, message, config=None, section='DEFAULT'):
         except Exception as e:
             raise _error.SMTPAuthenticationError(
                 server=server, username=username)
-    smtp.send_message(message, config.get(section, 'from'), recipient.split(','))
+    smtp.send_message(message, config.get(section, 'from'), to_addrs)
     smtp.quit()
 
 def lmtp_send(recipient, message, config=None, section='DEFAULT'):
     if config is None:
         config = _config.CONFIG
     server = config.get(section, 'lmtp-server')
-    port = config.getint(section, 'lmtp-port')
+    server, port = _split_host_port(
+        server, default_port=config.getint(section, 'lmtp-port'))
+    to_addrs = _recipient_to_addrs(recipient)
 
     _LOG.debug('sending message to {} via {}'.format(recipient, server))
     lmtp_auth = config.getboolean(section, 'lmtp-auth')
@@ -248,7 +325,7 @@ def lmtp_send(recipient, message, config=None, section='DEFAULT'):
         except Exception as e:
             raise _error.SMTPAuthenticationError(
                 server=server, username=username)
-    lmtp.send_message(message, config.get(section, 'from'), recipient.split(','))
+    lmtp.send_message(message, config.get(section, 'from'), to_addrs)
     lmtp.quit()
 
 def imap_send(message, config=None, section='DEFAULT'):
@@ -276,7 +353,10 @@ def imap_send(message, config=None, section='DEFAULT'):
                 raise _error.IMAPAuthenticationError(
                     server=server, port=port, username=username)
         mailbox = config.get(section, 'imap-mailbox')
-        date = _imaplib.Time2Internaldate(_time.localtime())
+        # Per RFC 3501 §6.4.4 INTERNALDATE is UTC by convention; using
+        # gmtime() makes the stored date unambiguous regardless of the
+        # host's local timezone, avoiding DST edge cases.
+        date = _imaplib.Time2internaldate(_time.gmtime())
         message_bytes = _flatten(message)
         imap.append(mailbox, None, date, message_bytes)
     finally:
@@ -422,12 +502,17 @@ def sendmail_send(recipient, message, config=None, section='DEFAULT'):
             stderr=_subprocess.STDOUT)
         stdout, _ = p.communicate(message_bytes)
         status = p.wait()
-        _LOG.debug(stdout.decode())
+        output = stdout.decode('utf-8', errors='replace')
+        _LOG.debug(output)
         if status:
             if _LOG.level > logging.DEBUG:
-                _LOG.error(stdout.decode())
+                _LOG.error(output)
             raise _error.SendmailError(status=status)
+    except _error.RSS2EmailError:
+        raise
     except Exception as e:
+        # Don't re-wrap an already-raised SendmailError; only wrap
+        # transport-layer failures (Popen, communicate, ...).
         raise _error.SendmailError() from e
 
 def send(recipient, message, config=None, section='DEFAULT'):
