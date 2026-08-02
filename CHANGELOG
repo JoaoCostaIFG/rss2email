@@ -1,5 +1,49 @@
 UNRELEASED
     * Support sending mail via LMTP
+    * Fix broken exception handlers that referenced `html.parser.HTMLParseError`
+      (removed in Python 3.5) and `IOError` (alias of `OSError` since 3.3);
+      these masked real errors with `AttributeError` inside `except` clauses.
+    * Replace fragile `_feedparser.http.zlib.error` reference with the stdlib
+      `zlib.error` that feedparser actually raises.
+    * Stop calling `urllib.request.install_opener` at import time; it was a
+      no-op side effect that clobbered caller-installed openers.
+    * Fix `subject-format`'s `feed-title` placeholder, which previously
+      returned the *entry* title. It now returns the feed's title, matching
+      the behavior of `name-format`. A new `entry-title` placeholder provides
+      the entry's title, and the default `subject-format` is now
+      `{entry-title}` so existing default behavior is preserved. Configs that
+      explicitly set `subject-format = ...{feed-title}...` will now see the
+      feed's title where they previously saw the entry title.
+    * Restrict the legacy pickle data-file fallback to opt-in
+      (`R2E_LEGACY_PICKLE=1`) and drop pointless log-level save/restore
+      around `json.load`.
+    * Fix `Feeds.pop()` so it removes the feed's config section (matching
+      `remove()`); the dead `__append__`/`__pop__` dunders never ran.
+    * Acquire an exclusive sidecar lockfile around the datafile read+save
+      lifecycle so concurrent `r2e run` and `r2e web` instances cannot lose
+      `seen`-state updates via `os.replace` races.
+    * Rename `rss2email.error.TimeoutError` to `FeedTimeoutError` to stop
+      shadowing the stdlib `TimeoutError`.
+    * Fix IPv6 `smtp-server` parsing (the first colon was mis-splitting
+      `[::1]:465`).
+    * Build IMAP `INTERNALDATE` from UTC (`time.gmtime`) instead of local
+      time, per RFC 3501.
+    * Pass the configured charset to the HTML alternative part; previously
+      non-ASCII HTML mail raised `UnicodeEncodeError` when flattened.
+    * Gate `multipart-html` rewriting on `content_type == 'html'` to avoid
+      double html2text-converting plain-text bodies.
+    * Sanitize `From`/`To`/`extra_headers` against CR/LF header injection.
+    * Drop the runtime `min_python_version = (3, 5)` check (contradicted
+      `requires-python = ">=3.8"`); packaging metadata is the source of
+      truth.
+    * Fix bare `except:` in `util.TimeLimitedFunction.run` so
+      `KeyboardInterrupt`/`SystemExit` propagate.
+    * Post-process hooks: guard `message.get_charsets()` against `None`, pass
+      `feed-timeout` to `urllib.request.urlopen`, and require opt-in
+      `beautifulsoup4` for the `prettify` example hook.
+    * Web UI: compare `Origin` against the server's bound address rather than
+      the client-supplied `Host` header; cap request body size; treat empty
+      `Origin`/`Host` as absent.
 
 v3.14 (2022-08-26)
     * New `digest-type` configuration adds optional more widely supported `multipart/mixed` format

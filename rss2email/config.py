@@ -162,8 +162,9 @@ CONFIG['DEFAULT'] = _collections.OrderedDict((
         # Example: digest-post-process = 'rss2email.post_process.downcase downcase_message'
         ('digest-post-process', ''),
         # The format for the Subject line.  Available attributes are
-        # 'feed', 'feed-name', 'feed-url', 'feed-title'.
-        ('subject-format', '{feed-title}'),
+        # 'feed', 'feed-name', 'feed-url', 'feed-title' (the feed's own
+        # title) and 'entry-title' (the individual entry's title).
+        ('subject-format', '{entry-title}'),
 
         ## HTML conversion
         # True: Send text/html messages when possible.

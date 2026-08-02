@@ -4,7 +4,7 @@ Content-Type: text/plain; charset="us-ascii"
 Content-Transfer-Encoding: 7bit
 From: "rss2email: Lindsey Smith" <user@rss2email.invalid>
 To: a@b.com
-Subject: 123 test -> Version 2.67 Released
+Subject: 123 test -> rss2email
 Date: Tue, 21 Sep 2010 16:55:07 -0000
 Message-ID: <...@dev.null.invalid>
 User-Agent: rss2email/...
@@ -45,7 +45,7 @@ Content-Type: text/plain; charset="us-ascii"
 Content-Transfer-Encoding: 7bit
 From: "rss2email: Lindsey Smith" <user@rss2email.invalid>
 To: a@b.com
-Subject: 123 test -> Version 2.68 Released with Actual New Features
+Subject: 123 test -> rss2email
 Date: Fri, 01 Oct 2010 18:21:26 -0000
 Message-ID: <...@dev.null.invalid>
 User-Agent: rss2email/...
@@ -92,7 +92,7 @@ Content-Type: text/plain; charset="us-ascii"
 Content-Transfer-Encoding: 7bit
 From: "rss2email: Lindsey Smith" <user@rss2email.invalid>
 To: a@b.com
-Subject: 123 test -> How to Read RSS Feeds in Emacs
+Subject: 123 test -> rss2email
 Date: Fri, 05 Nov 2010 17:36:14 -0000
 Message-ID: <...@dev.null.invalid>
 User-Agent: rss2email/...
