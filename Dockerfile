@@ -16,17 +16,21 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Install uv (used for dependency resolution and installation).
+COPY --from=ghcr.io/astral-sh/uv:0.8.4 /uv /usr/local/bin/uv
+
 # Install the application and its declared runtime dependencies. We
-# install from the local source tree (rather than `pip install .` after
+# install from the local source tree (rather than `uv sync` after
 # copying everything) so a change to the lockfile invalidates only the
 # expensive dependency-resolution layer, not the source copy.
-COPY pyproject.toml poetry.lock setup.py ./
+COPY pyproject.toml uv.lock ./
 COPY rss2email ./rss2email
 COPY r2e ./r2e
 COPY r2e.1 ./
 COPY completion ./completion
 COPY README.rst AUTHORS CHANGELOG COPYING ./
-RUN pip install .
+RUN uv sync --frozen --no-dev --no-install-project \
+ && uv sync --frozen --no-dev
 
 # Create an unprivileged, non-login user with a fixed UID/GID so the
 # bind-mounted data directory can be owned consistently between the
@@ -43,7 +47,8 @@ RUN groupadd --gid 1000 rss2email \
 # inspects $HOME (rather than the XDG vars) also lands on the mount.
 ENV XDG_CONFIG_HOME=/data/config \
     XDG_DATA_HOME=/data/data \
-    HOME=/data
+    HOME=/data \
+    PATH=/app/.venv/bin:$PATH
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

@@ -15,7 +15,7 @@ if you have a question (or something is not described sufficiently).
 
 - `rm -Rf dist rss2email.egg-info`
 - `nix-shell -p python3Packages.{setuptools,wheel,twine}`
-- `SOURCE_DATE_EPOCH=315532800 python3 setup.py sdist bdist_wheel`
+- `uv build`
 - `twine upload --repository-url https://test.pypi.org/legacy/ dist/*`
   You need to register a separate account on test.pypi.org!
   Then you need to be added to the rss2email package there separately.
