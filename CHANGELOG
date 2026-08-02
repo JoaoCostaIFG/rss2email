@@ -53,6 +53,18 @@ UNRELEASED
     * Web UI: compare `Origin` against the server's bound address rather than
       the client-supplied `Host` header; cap request body size; treat empty
       `Origin`/`Host` as absent.
+    * Sanitize feed-supplied HTML before wrapping it in outbound HTML mail
+      (`html-mail`/`multipart-html`). Strips `<script>`, `<iframe>`,
+      `<object>`, `<embed>`, `<applet>`, `<meta>`, `<link>`, `<base>`,
+      `<style>`, `<form>`, all `on*` event-handler attributes, and
+      `javascript:`/`vbscript:`/`mocha:`/`livescript:` URLs on
+      `href`/`src`/`action`/`formaction`/`xlink:href`. Previously the raw
+      feed body reached the user's mail client unmodified, where it could
+      execute scripts, load trackers, exfiltrate via CSS, or hijack
+      clicks.
+    * Bind the digest-loop `sender` to `None` before the loop so a
+      degenerate `if seen:`-empty path can't read a leaked prior-loop
+      value.
 
 v3.14 (2022-08-26)
     * New `digest-type` configuration adds optional more widely supported `multipart/mixed` format

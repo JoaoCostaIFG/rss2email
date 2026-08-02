@@ -97,6 +97,61 @@ _SOCKET_ERRORS = tuple(_SOCKET_ERRORS)
 _feedparser.PREFERRED_XML_PARSERS = []
 
 
+# Strip dangerous constructs from feed-supplied HTML before wrapping it in
+# an outbound HTML email. The feed body would otherwise reach the user's
+# mail client unmodified, where it could execute scripts, load trackers,
+# exfiltrate via CSS, or hijack clicks with ``javascript:`` URLs.
+#
+# We deliberately use a regex pass instead of an HTML parser so benign
+# input comes through byte-identical (existing email fixtures encode the
+# exact rendered bytes, and a parser-based sanitizer would re-quote
+# attributes / reorder things and churn every fixture).
+_STRIP_PAIRED = _re.compile(
+    r'<\s*(script|iframe|object|embed|applet|meta|link|base|style|form)\b[^>]*>.*?<\s*/\s*\1\s*>',
+    _re.IGNORECASE | _re.DOTALL)
+_STRIP_ORPHAN = _re.compile(
+    r'<\s*/?\s*(script|iframe|object|embed|applet|meta|link|base|style|form)\b[^>]*/?>',
+    _re.IGNORECASE)
+# Event-handler attributes: ``on*="..."`` (onclick, onerror, onload, ...).
+_STRIP_ON_ATTR = _re.compile(
+    r'\s+on[a-zA-Z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)',
+    _re.IGNORECASE)
+# ``href``/``src`` (and friends) pointing at dangerous schemes.
+_URL_ATTR = _re.compile(
+    r'((?:href|src|action|formaction|xlink:href)\s*=\s*)'
+    r'("[^"]*"|\'[^\']*\'|[^\s>]+)',
+    _re.IGNORECASE)
+_DANGEROUS_URL_SCHEMES = ('javascript:', 'vbscript:', 'mocha:', 'livescript:')
+
+
+def _sanitize_html(body):
+    """Best-effort strip of dangerous HTML constructs from feed content.
+
+    >>> _sanitize_html('<p>ok</p>')
+    '<p>ok</p>'
+    >>> _sanitize_html('<p onclick="x()">hi</p>')
+    '<p>hi</p>'
+    >>> _sanitize_html('<a href="javascript:alert(1)">x</a>')
+    '<a href="">x</a>'
+    >>> _sanitize_html('<script>alert(1)</script>after')
+    'after'
+    """
+    if not body:
+        return body
+    body = _STRIP_PAIRED.sub('', body)
+    body = _STRIP_ORPHAN.sub('', body)
+    body = _STRIP_ON_ATTR.sub('', body)
+    def _scrub_url(match):
+        prefix, raw = match.group(1), match.group(2)
+        value = raw.strip('"\' \t\r\n').lower()
+        for scheme in _DANGEROUS_URL_SCHEMES:
+            if value.startswith(scheme):
+                return prefix + '""'
+        return match.group(0)
+    body = _URL_ATTR.sub(_scrub_url, body)
+    return body
+
+
 class Feed (object):
     """Utility class for feed manipulation and storage.
 
@@ -856,7 +911,11 @@ class Feed (object):
                     '<div class="body" id="body">',
                     ])
             if content['type'] in ('text/html', 'application/xhtml+xml'):
-                lines.append(content['value'].strip())
+                # Strip dangerous constructs (scripts, event handlers,
+                # ``javascript:``/``vbscript:`` URLs, ...) from feed HTML
+                # before it is wrapped in the outbound message. See
+                # ``_sanitize_html`` for the rationale.
+                lines.append(_sanitize_html(content['value'].strip()))
             else:
                 lines.append(_saxutils.escape(content['value'].strip()))
             lines.append('</div>')
@@ -953,6 +1012,8 @@ class Feed (object):
                 raise _error.InvalidDigestType(type)
             digest = self._new_digest()
             seen = []
+            sender = None  # bound here so the post-loop send can't read a
+                           # loop-variable leak when ``seen`` is empty.
             for (guid, state, sender, message) in self._process(parsed):
                 _LOG.debug('new message: {}'.format(message['Subject']))
                 seen.append((guid, state))
