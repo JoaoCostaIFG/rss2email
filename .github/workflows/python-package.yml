@@ -1,19 +1,20 @@
-# This workflow will install Python dependencies and run tests.
+# This workflow installs Python dependencies and runs tests.
 
 name: Python package
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
 
 jobs:
-  build:
+  test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python-version: [3.8, 3.9, '3.10', 3.11, 3.12, 3.13]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
@@ -23,9 +24,30 @@ jobs:
     - name: Install uv
       uses: astral-sh/setup-uv@v6
     - name: Install dependencies
-      run: |
-        uv sync
+      # --frozen refuses to mutate uv.lock, so CI fails if the lockfile
+      # is out of date with pyproject.toml rather than silently
+      # re-resolving and masking a broken lock on a transient host.
+      run: uv sync --frozen
     - name: Test
       run: |
         cd ./test
         uv run python -m unittest -v
+
+  build:
+    # Build the sdist + wheel once (the package is pure Python, so a
+    # Linux host suffices) and smoke-check it with twine.
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+    - name: Install dependencies
+      run: uv sync --frozen
+    - name: Build sdist + wheel
+      run: uv build
+    - name: Smoke-check the distribution
+      run: uv run --with twine twine check dist/*

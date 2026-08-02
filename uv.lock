@@ -67,7 +67,7 @@ prettify = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", marker = "extra == 'prettify'", specifier = ">=4.6" },
-    { name = "feedparser", specifier = ">=6.0.5" },
+    { name = "feedparser", specifier = ">=6.0.5,<7" },
     { name = "html2text", specifier = "==2020.1.16" },
     { name = "update-copyright", marker = "extra == 'dev'", specifier = ">=0.6.2" },
 ]

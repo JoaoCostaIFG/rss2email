@@ -18,7 +18,10 @@ Notes for agents working in the `rss2email` repo.
   (module is `test.test` because `test.py` lives in the `test/` package directory; add `cd test` so the `util/execcontext` import and data paths resolve)
 - There is no lint, typecheck, or formatter configured. `unittest` is the only verification step.
 - Build sdist/wheel: `uv build`
-- Dev shell with all system + python deps: `nix-shell` (uses `shell.nix`, which wraps `uv`).
+- Dev shell with all python deps: `uv sync` (installs into the project
+  venv from `uv.lock`). The previous `nix-shell` flow has been removed;
+  the pinned Nix expressions targeted a 2021 nixpkgs that pre-dated
+  `uv` and Python 3.6/3.7, and were broken.
 
 ## Test suite quirks
 
@@ -38,7 +41,7 @@ Notes for agents working in the `rss2email` repo.
 
 ## Release flow
 
-- Documented in `HACKING.md` and uses Nix: `nix-shell`, run `update-copyright.py` (config in `.update-copyright.conf`, drives the per-file author/year headers in every source file), update `CHANGELOG`, bump `__version__` in `rss2email/__init__.py`, commit, then build sdist/wheel with `uv build` and `twine upload`.
+- Documented in `HACKING.md`: `uv sync`, run `update-copyright` (config in `.update-copyright.conf`, drives the per-file author/year headers in every source file), update `CHANGELOG`, bump `__version__` in `rss2email/__init__.py`, commit, then build sdist/wheel with `uv build` and `twine upload`. The release flow no longer depends on Nix (the previous Nix expressions were broken; see `HACKING.md`).
 
 ## Conventions
 

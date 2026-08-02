@@ -2,57 +2,34 @@
 
 This document is still TODO. Please contribute to it and file issues
 if you have a question (or something is not described sufficiently).
-
+See `AGENTS.md` for the canonical build/test/release commands an
+agent (or contributor) should run.
 
 ## Cutting a new release
 
-- `nix-shell`
-- `update-copyright.py`
+The release flow uses [uv](https://github.com/astral-sh/uv) and the
+optional `update-copyright` dev dependency. There is no Nix shell
+anymore (the previous Nix expressions pinned a 2021 nixpkgs that pre-dated
+`uv` and targeted Python 3.6/3.7, so they were broken and have been
+removed).
+
+- `uv sync` (sync the dev environment from the lockfile)
+- `uv run --extra dev update-copyright` (config in
+  `.update-copyright.conf`; this refreshes the per-file author/year
+  headers in every source file)
 - Prepare `CHANGELOG`
-- Fix `__version__` in `rss2email/__init__.py`
+- Bump `__version__` in `rss2email/__init__.py` (the source of truth;
+  `pyproject.toml` reads it dynamically via
+  `tool.setuptools.dynamic.version`)
 - `git commit`
-- `exit`
 
-- `rm -Rf dist rss2email.egg-info`
-- `nix-shell -p python3Packages.{setuptools,wheel,twine}`
-- `uv build`
-- `twine upload --repository-url https://test.pypi.org/legacy/ dist/*`
-  You need to register a separate account on test.pypi.org!
-  Then you need to be added to the rss2email package there separately.
-- Check it actually work on test-pypi (NixOS test, run on dev machines…)
+- `uv build` (produces `dist/rss2email-<version>.{tar.gz,whl}`)
+- `uv run twine check dist/*`
+- `uv run twine upload --repository-url https://test.pypi.org/legacy/ dist/*`
+  You need to register a separate account on test.pypi.org, then be
+  added to the rss2email package there separately.
+- Verify the test-pypi install works (install in a fresh venv, run the
+  unittest suite from a checkout).
 
-- Add git tag, git branch if need be, push it to repository
-- `twine upload dist/*`
-
-
-## Using nix support
-
-`rss2email` has a few nix definitions in order to simplify development.
-In order to use them you need to install the [nix package
-manager](https://nixos.org/nix) version 2 or later on your system.
-
-### Open a shell with all dependencies
-
-Run `nix-shell` in the top directory. It will open a bash with all
-dependencies (python and system) required for working on `rss2email`.
-This uses the [`shell.nix`](./shell.nix) file.
-
-### Test `rss2email` against multiple python versions
-
-`nix/release.nix` contains an expression to build and test rss2email
-against multiple python versions.
-
-You can build each one of them like this:
-
-```
-nix-build -A pythonVersions.rss2email-python_3_6 nix/release.nix
-nix-build -A pythonVersions.rss2email-python_3_7 nix/release.nix
-nix-build -A pythonVersions.rss2email-python_3_8 nix/release.nix
-…
-```
-
-and all at once with
-
-```
-nix-build -A pythonVersions nix/release.nix
-```
+- Tag and push: `git tag v<version> && git push --tags origin master`
+- `uv run twine upload dist/*`
