@@ -53,12 +53,14 @@ def process(feed, parsed, entry, guid, message):
     links = []
 
     # Get the link
-    link = entry['link']
+    link = entry.get('link')
     if link:
         links.append(link)
 
-    for enclosure in entry['enclosures']:
-        links.append(enclosure['href'])
+    for enclosure in entry.get('enclosures', []):
+        href = enclosure.get('href')
+        if href:
+            links.append(href)
 
     if not links:
         return message
