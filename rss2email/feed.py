@@ -526,8 +526,8 @@ class Feed (object):
             warned = True
         elif isinstance(exc, AttributeError):
             # feedparser occasionally raises AttributeError on malformed
-            # feeds; surface non-feedparser attribute errors via the
-            # generic ``processing error`` branch below by re-raising them.
+            # feeds; treat it as a processing warning rather than a hard
+            # crash so a single bad entry doesn't abort the whole run.
             _LOG.error('{}: {}'.format(exc, self))
             warned = True
         elif isinstance(exc, KeyboardInterrupt):
