@@ -452,14 +452,20 @@ class Feed (object):
             _LOG.debug('processing {}'.format(entry.get('id', 'no-id')))
             processed = self._process_entry(parsed=parsed, entry=entry)
             if processed:
-                guid, _, sender, message = processed
+                guid, new_state, sender, message = processed
                 if self.post_process:
                     message = self.post_process(
                         feed=self, parsed=parsed, entry=entry, guid=guid,
                         message=message)
                     if not message:
                         continue
-                yield processed
+                # Yield the (possibly hook-replaced) ``message`` rather
+                # than the original ``processed`` tuple: a post-process
+                # hook is documented to return the altered message, and
+                # some hooks construct a fresh message object instead of
+                # mutating in place (the bundled ``downcase`` hook happens
+                # to mutate in place, which masked this bug).
+                yield (guid, new_state, sender, message)
 
     def _check_for_errors(self, parsed):
         warned = False

@@ -1,4 +1,10 @@
 UNRELEASED
+    * Use the message a `post-process` hook returns instead of silently
+      discarding it. ``Feed._process`` yielded the original message tuple
+      rather than the hook's returned message, so hooks that built a fresh
+      message (as the documented contract describes) had no effect; only
+      hooks that mutated the message in place (like the bundled
+      ``downcase``) appeared to work.
     * Support sending mail via LMTP
     * Fix broken exception handlers that referenced `html.parser.HTMLParseError`
       (removed in Python 3.5) and `IOError` (alias of `OSError` since 3.3);
