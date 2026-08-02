@@ -10,12 +10,17 @@ Notes for agents working in the `rss2email` repo.
   ```
   cd test && uv run python -m unittest -v
   ```
-  Tests **must** be run from inside `test/`. `test/test.py` does `os.chdir` to its own directory and globs `data/*/*.config` relative to it.
+  `TestEmails` paths are now derived from `__file__` (paths are globbed
+  absolutely and `run_single_test` chdirs locally to the test directory
+  for the `feed.run()` call), so the suite also runs from the repo root:
+  ```
+  uv run python -m unittest discover -s test -t test -p "test*.py"
+  ```
 - Run a single test class/method:
   ```
   cd test && uv run python -m unittest test.test.TestSend.test_maildir -v
   ```
-  (module is `test.test` because `test.py` lives in the `test/` package directory; add `cd test` so the `util/execcontext` import and data paths resolve)
+  (module is `test.test` because `test.py` lives in the `test/` package directory; `cd test` makes the `util/execcontext` import and data paths resolve via this directory being on `sys.path`)
 - There is no lint, typecheck, or formatter configured. `unittest` is the only verification step.
 - Build sdist/wheel: `uv build`
 - Dev shell with all python deps: `uv sync` (installs into the project

@@ -12,6 +12,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from util.execcontext import ExecContext
 from util.tempmaildir import TemporaryMaildir
 
+# Resolve the bundled feed fixtures relative to this file so the suite
+# doesn't depend on the process CWD.
+_DATA_DIR = Path(__file__).absolute().parent / "data" / "nodejs"
+
 
 class TestReplyChanges(unittest.TestCase):
 
@@ -56,20 +60,20 @@ class TestReplyChanges(unittest.TestCase):
 
     def _call(self, config: str):
         with ExecContext(config) as ctx:
-            shutil.copyfile("data/nodejs/feed1.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed1.xml"), str(self.feed_path))
             ctx.call("run")
-            shutil.copyfile("data/nodejs/feed2.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed2.xml"), str(self.feed_path))
             ctx.call("run")
 
 
     def test_switch(self):
         config = self._config({"reply-changes": False})
         with ExecContext(config) as ctx:
-            shutil.copyfile("data/nodejs/feed1.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed1.xml"), str(self.feed_path))
             ctx.call("run")
             ctx.change_config({"reply-changes": True})
             ctx.call("run")
-            shutil.copyfile("data/nodejs/feed2.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed2.xml"), str(self.feed_path))
             ctx.call("run")
 
         messages = self.maildir.inbox_messages() # type: List[mailbox.MaildirMessage]
@@ -81,11 +85,11 @@ class TestReplyChanges(unittest.TestCase):
     def test_no_send(self):
         config = self._config({"reply-changes": True})
         with ExecContext(config) as ctx:
-            shutil.copyfile("data/nodejs/feed1.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed1.xml"), str(self.feed_path))
             ctx.call("run")
-            shutil.copyfile("data/nodejs/feed2.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed2.xml"), str(self.feed_path))
             ctx.call("run", "--no-send")
-            shutil.copyfile("data/nodejs/feed3.xml", str(self.feed_path))
+            shutil.copyfile(str(_DATA_DIR / "feed3.xml"), str(self.feed_path))
             ctx.call("run")
 
         messages = self.maildir.inbox_messages() # type: List[mailbox.MaildirMessage]

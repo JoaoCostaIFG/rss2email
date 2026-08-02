@@ -64,15 +64,18 @@ def load_tests(loader, tests, ignore):
 # if we had one big test that ran everything.
 class TestEmailsMeta(type):
     def __new__(cls, name, bases, attrs):
-        # no paths on the command line, find all subdirectories
-        this_dir = _os.path.dirname(__file__)
-
-        # we need standardized URLs, so change to `this_dir` and adjust paths
-        _os.chdir(this_dir)
-
-        # Generate test methods
-        for test_config_path in _glob.glob("data/*/*.config"):
-            test_name = "test_email_{}".format(test_config_path)
+        # Compute paths from __file__ (this directory) rather than the
+        # process CWD; previously this method called os.chdir at class
+        # creation time (i.e. at import), which is a process-global side
+        # effect that breaks parallel test runners and any test that
+        # depends on a different CWD. ``run_single_test`` chdirs locally
+        # to ``__file__``'s directory for the ``feed.run()`` call so the
+        # existing fixtures (which encode the relative ``data/...``
+        # feed URL) stay portable.
+        base = _os.path.dirname(__file__)
+        for test_config_path in _glob.glob(_os.path.join(base, "data", "*", "*.config")):
+            test_name = "test_email_{}".format(
+                _os.path.relpath(test_config_path, base))
             attrs[test_name] = cls.generate_test(test_config_path)
 
         return super(TestEmailsMeta, cls).__new__(cls, name, bases, attrs)
@@ -80,10 +83,7 @@ class TestEmailsMeta(type):
     @classmethod
     def generate_test(cls, test_path):
         def fn(self):
-            if _os.path.isdir(test_path):
-                self.run_single_test(dirname=test_path)
-            else:
-                self.run_single_test(config_path=test_path)
+            self.run_single_test(config_path=test_path)
         return fn
 
 class TestEmails(unittest.TestCase, metaclass=TestEmailsMeta):
@@ -141,6 +141,7 @@ class TestEmails(unittest.TestCase, metaclass=TestEmailsMeta):
         return text
 
     def run_single_test(self, dirname=None, config_path=None):
+        base = _os.path.dirname(__file__)
         if dirname is None:
             dirname = _os.path.dirname(config_path)
         if config_path is None:
@@ -154,9 +155,23 @@ class TestEmails(unittest.TestCase, metaclass=TestEmailsMeta):
         config = _rss2email_config.Config()
         config.read_string(self.BASE_CONFIG_STRING)
         read_paths = config.read([config_path])
-        feed = _rss2email_feed.Feed(name='test', url=Path(feed_path).as_posix(), config=config)
+        # Use a path relative to ``base`` so the X-RSS-Feed header (and the
+        # recorded fixture output) stays portable across machines.
+        relative_feed_path = _os.path.relpath(feed_path, base)
+        feed = _rss2email_feed.Feed(
+            name='test', url=Path(relative_feed_path).as_posix(),
+            config=config)
         feed._send = TestEmails.Send()
-        feed.run()
+        cwd = _os.getcwd()
+        try:
+            # Chdir to ``base`` for the duration of ``feed.run()`` so the
+            # feed URL (relative, e.g. ``data/allthingsrss/feed.atom``)
+            # resolves the same way it did before. Restored on exit so we
+            # leave the process CWD untouched for any later test.
+            _os.chdir(base)
+            feed.run()
+        finally:
+            _os.chdir(cwd)
         generated = feed._send.as_string()
         generated = self.clean_result(generated)
 
