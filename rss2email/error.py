@@ -99,7 +99,13 @@ class IMAPConnectionError (ValueError, RSS2EmailError):
         if message is None:
             message = 'could not connect to mail server {}:{}'.format(
                 server, port)
-        super(IMAPConnectionError, self).__init__(message=message)
+        # ``IMAPConnectionError`` lists ``ValueError`` before
+        # ``RSS2EmailError``, so ``super()`` is ``ValueError`` whose
+        # ``__init__`` (inherited from ``BaseException``) does not accept
+        # the ``message=`` keyword -- passing positionally avoids the
+        # ``TypeError: takes no keyword arguments`` that previously made
+        # this class (and ``IMAPAuthenticationError``) un-instantiable.
+        super(IMAPConnectionError, self).__init__(message)
         self.server = server
         self.port = port
 

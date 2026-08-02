@@ -1,4 +1,16 @@
 UNRELEASED
+    * Fix IMAP sending: `imap_send` referenced `imaplib.Time2internaldate`,
+      which doesn't exist (the stdlib name is `Time2Internaldate`), so every
+      IMAP append raised `AttributeError` before reaching the server. Also
+      guard the `imap` session so a connection failure raises
+      `IMAPConnectionError` (with the cause chained) instead of an
+      `UnboundLocalError` from the `finally: imap.logout()` masking it.
+    * Fix `IMAPConnectionError` / `IMAPAuthenticationError` instantiation:
+      `IMAPConnectionError(ValueError, RSS2EmailError)` resolved `super()`
+      to `ValueError`, whose `__init__` rejects the `message=` keyword, so
+      raising either class crashed with `TypeError: takes no keyword
+      arguments`. The class was previously dead code (never raised), which
+      is why the bug survived.
     * Use the message a `post-process` hook returns instead of silently
       discarding it. ``Feed._process`` yielded the original message tuple
       rather than the hook's returned message, so hooks that built a fresh

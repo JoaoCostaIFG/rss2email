@@ -335,11 +335,17 @@ def imap_send(message, config=None, section='DEFAULT'):
     port = config.getint(section, 'imap-port')
     _LOG.debug('sending message to {}:{}'.format(server, port))
     ssl = config.getboolean(section, 'imap-ssl')
-    if ssl:
-        imap = _imaplib.IMAP4_SSL(server, port)
-    else:
-        imap = _imaplib.IMAP4(server, port)
+    # ``imap`` is initialized to None so the ``finally: imap.logout()``
+    # below can't raise ``UnboundLocalError`` if the constructor throws
+    # (which would mask the real connection error). ``smtp_send`` and
+    # ``lmtp_send`` wrap their constructor in try/except for the same
+    # reason; IMAP4[_SSL] raises here on a dead/unreachable server.
+    imap = None
     try:
+        if ssl:
+            imap = _imaplib.IMAP4_SSL(server, port)
+        else:
+            imap = _imaplib.IMAP4(server, port)
         if config.getboolean(section, 'imap-auth'):
             username = config.get(section, 'imap-username')
             password = config.get(section, 'imap-password')
@@ -351,16 +357,33 @@ def imap_send(message, config=None, section='DEFAULT'):
                 raise
             except Exception as e:
                 raise _error.IMAPAuthenticationError(
-                    server=server, port=port, username=username)
+                    server=server, port=port, username=username) from e
         mailbox = config.get(section, 'imap-mailbox')
         # Per RFC 3501 §6.4.4 INTERNALDATE is UTC by convention; using
         # gmtime() makes the stored date unambiguous regardless of the
         # host's local timezone, avoiding DST edge cases.
-        date = _imaplib.Time2internaldate(_time.gmtime())
+        date = _imaplib.Time2Internaldate(_time.gmtime())
         message_bytes = _flatten(message)
         imap.append(mailbox, None, date, message_bytes)
+    except _error.RSS2EmailError:
+        raise
+    except Exception as e:
+        # Connection / APPEND transport failures. Only wrap when we
+        # actually opened a session so a constructor failure isn't
+        # reported as a logout failure.
+        if imap is None:
+            raise _error.IMAPConnectionError(server=server, port=port) from e
+        _LOG.error('IMAP error appending to {}:{}: {}'.format(server, port, e))
+        raise _error.IMAPConnectionError(
+            server=server, port=port,
+            message='IMAP error appending to {}:{}: {}'.format(server, port, e)
+            ) from e
     finally:
-        imap.logout()
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
 
 def maildir_send(message, config=None, section='DEFAULT'):
     if config is None:
