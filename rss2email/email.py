@@ -51,7 +51,6 @@ import io as _io
 import smtplib as _smtplib
 import ssl as _ssl
 import subprocess as _subprocess
-import sys as _sys
 import time as _time
 import os as _os
 

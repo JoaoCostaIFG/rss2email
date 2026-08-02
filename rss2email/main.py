@@ -206,6 +206,7 @@ def run(*args, **kwargs):
         # TODO: What to do on Windows?
         lockfile = None
 
+    feeds = None
     try:
         if not args.config:
             args.config = None
