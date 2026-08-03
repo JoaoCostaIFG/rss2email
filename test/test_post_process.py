@@ -136,9 +136,15 @@ class TestRedirectHook(unittest.TestCase):
             'Visit http://example.com/entry for more.',
             'plain', 'us-ascii')
         msg['Subject'] = 'single part entry'
+        closed = []
         class _Resp:
             def geturl(self):
                 return 'http://example.com/entry'
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                closed.append(True)
+                return False
         class _Opener:
             def open(self, request, timeout=None):
                 return _Resp()
@@ -153,6 +159,9 @@ class TestRedirectHook(unittest.TestCase):
         finally:
             urllib.request.build_opener = orig_build
         self.assertEqual(out.get_content_type(), 'text/plain')
+        # The urllib response must be released (closed) once consumed,
+        # so a feed with many links doesn't leak a connection each.
+        self.assertEqual(closed, [True])
 
 
 if __name__ == '__main__':

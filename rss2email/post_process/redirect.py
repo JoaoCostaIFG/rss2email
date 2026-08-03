@@ -88,10 +88,15 @@ def process(feed, parsed, entry, guid, message):
     else:
         opener = urllib.request.build_opener()
     for link in links:
+        # ``opener.open`` returns a response object holding the underlying
+        # HTTP connection/socket; close it via the context manager so a
+        # feed with many enclosures doesn't leak a connection per link
+        # for the rest of the run (until GC reaps them).
         try:
             request = urllib.request.Request(link)
             request.add_header('User-agent', feed.user_agent)
-            direct_link = opener.open(request, timeout=timeout).geturl()
+            with opener.open(request, timeout=timeout) as response:
+                direct_link = response.geturl()
         except Exception as e:
             LOG.warning('could not follow redirect for {}: {}'.format(
                 link, e))
