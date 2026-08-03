@@ -34,7 +34,7 @@ def get_python_version(package):
 def get_python_package_version(package):
     try:
         module = _importlib.import_module(package)
-    except ImportError as e:
+    except ImportError:
         return None
     return getattr(module, '__version__', 'unknown')
 

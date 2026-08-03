@@ -294,7 +294,7 @@ def smtp_send(recipient, message, config=None, section='DEFAULT'):
             raise
         except Exception as e:
             raise _error.SMTPAuthenticationError(
-                server=server, username=username)
+                server=server, username=username) from e
     smtp.send_message(message, config.get(section, 'from'), to_addrs)
     smtp.quit()
 
@@ -323,7 +323,7 @@ def lmtp_send(recipient, message, config=None, section='DEFAULT'):
             raise
         except Exception as e:
             raise _error.SMTPAuthenticationError(
-                server=server, username=username)
+                server=server, username=username) from e
     lmtp.send_message(message, config.get(section, 'from'), to_addrs)
     lmtp.quit()
 

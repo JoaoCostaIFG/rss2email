@@ -579,7 +579,7 @@ class Feed (object):
         self.config.setup_html2text(section=self.section)
         try:
             return _html2text.html2text(html=html, baseurl=baseurl)
-        except Exception as e:
+        except Exception:
             # html2text raises various parser errors; fall back to the
             # caller's default when one is provided, otherwise re-raise so
             # the real failure surfaces instead of being masked.
