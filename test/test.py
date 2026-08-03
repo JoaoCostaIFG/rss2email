@@ -154,7 +154,7 @@ class TestEmails(unittest.TestCase, metaclass=TestEmailsMeta):
         _rss2email.LOG.info('testing {}'.format(config_path))
         config = _rss2email_config.Config()
         config.read_string(self.BASE_CONFIG_STRING)
-        read_paths = config.read([config_path])
+        _ = config.read([config_path])
         # Use a path relative to ``base`` so the X-RSS-Feed header (and the
         # recorded fixture output) stays portable across machines.
         relative_feed_path = _os.path.relpath(feed_path, base)
