@@ -182,6 +182,13 @@ def _write_html(self, body, status=200):
 
 def _parse_form(self):
     length = int(self.headers.get('Content-Length', 0) or 0)
+    # Reject negative Content-Length up front: ``rfile.read(-1)`` reads
+    # until EOF, so a client claiming ``Content-Length: -1`` would bypass
+    # the ``_MAX_FORM_BYTES`` cap below and let it buffer an unbounded
+    # body into memory.
+    if length < 0:
+        raise _feeds_error_renderer(
+            'Invalid Content-Length ({}).'.format(length))
     if length > _MAX_FORM_BYTES:
         raise _feeds_error_renderer(
             'Form body too large ({} bytes; limit {} bytes).'.format(

@@ -817,6 +817,24 @@ class TestWeb(unittest.TestCase):
         res = self.ctx.call('list')
         self.assertEqual(res.stdout.strip(), '')
 
+    def test_negative_content_length_is_rejected(self):
+        "A negative Content-Length no longer bypasses the body-size cap"
+        # ``rfile.read(-1)`` reads until EOF, so before the guard a
+        # ``Content-Length: -1`` header slipped past the ``_MAX_FORM_BYTES``
+        # check (``-1 > limit`` is False) and let the client buffer an
+        # unbounded body into memory. Send a raw request with a negative
+        # Content-Length and no body, and assert the server rejects it
+        # instead of trying to read until EOF.
+        c = _httpclient.HTTPConnection('127.0.0.1', self.port)
+        c.request('POST', '/add', body=None,
+                  headers={'Content-Length': '-1',
+                           'Content-Type': 'application/x-www-form-urlencoded'})
+        r = c.getresponse()
+        body = r.read().decode('utf-8')
+        c.close()
+        self.assertEqual(r.status, 200)
+        self.assertIn('Invalid Content-Length', body)
+
     def test_concurrent_gets_dont_corrupt_state(self):
         ("Concurrent GETs alongside POSTs must not crash the server or "
          "corrupt the in-memory ConfigParser, which is a process-global "
