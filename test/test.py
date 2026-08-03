@@ -425,6 +425,39 @@ class TestRunCommands(unittest.TestCase):
                 _rss2email_email._flatten(msg)
             self.assertIs(cm.exception, real_err)
 
+    def test_save_feeds_failure_still_persists_config_changes(self):
+        "A save_feeds failure must not skip save_config (loose 301/410 state)"
+        # A 301 redirect rewrites feed.url and a 410 Gone sets active=False
+        # during feed.run(); command.run persists these in its ``finally``.
+        # If save_feeds raised first (disk full), save_config used to be
+        # skipped, so the URL/active change was silently lost. Now
+        # save_feeds is wrapped so save_config still runs, then the error
+        # is re-raised so the user knows the datafile write failed.
+        import types as _types
+        feeds = _rss2email_feeds.Feeds()
+        feeds.config = _rss2email_config.Config()
+        feeds.config.read_dict(_rss2email_config.CONFIG)
+
+        class _StubFeed:
+            active = True
+            url = 'http://old.example.com/feed'
+            name = 'stub'
+            _config_dirty = False
+            def run(self, send=True, clean=False):
+                self.url = 'http://new.example.com/feed'
+                self._config_dirty = True
+
+        feeds.append(_StubFeed())
+        persisted_config = []
+        feeds.save_config = lambda: persisted_config.append(True)
+        err = OSError('disk full')
+        feeds.save_feeds = lambda: (_ for _ in ()).throw(err)
+        args = _types.SimpleNamespace(index=[0], send=False, clean=False)
+        with self.assertRaises(OSError) as cm:
+            _rss2email_command.run(feeds=feeds, args=args)
+        self.assertIs(cm.exception, err)
+        self.assertEqual(persisted_config, [True])
+
     def test_smtp_send_rejects_whitespace_recipient(self):
         "A recipient that parses to no address raises instead of dropping mail"
         # ``_recipient_to_addrs('   ')`` returns ``[]``; passing that to

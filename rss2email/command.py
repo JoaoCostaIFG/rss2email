@@ -99,7 +99,21 @@ def run(feeds, args):
                     e.log()
                 last_server = current_server
     finally:
-        feeds.save_feeds()
+        # If saving the feed state (seen/etag) fails -- disk full,
+        # permission denied on the datafile, etc. -- we still want to
+        # persist any config-backed mutations from this run (a 301/308
+        # redirect rewrote ``feed.url``; a 410 Gone set
+        # ``feed.active = False``). Otherwise the next run would re-hit
+        # the old URL or re-activate the gone feed, and the change would
+        # be silently lost. Capture the save_feeds error, still attempt
+        # save_config when something is dirty, then re-raise so the
+        # user sees that feed-state persistence failed.
+        save_feeds_error = None
+        try:
+            feeds.save_feeds()
+        except Exception as e:
+            save_feeds_error = e
+            _LOG.error('failed to save feed data: {}'.format(e))
         # Persist any config-backed mutations made by ``Feed.run()``
         # (today: a 301/308 redirect rewrites ``feed.url``, and a 410
         # Gone sets ``feed.active = False``). Without this, the change
@@ -111,6 +125,8 @@ def run(feeds, args):
         if any(getattr(feed, '_config_dirty', False) for feed in feeds):
             _LOG.info('persisting config changes (feed URL/active mutations)')
             feeds.save_config()
+        if save_feeds_error is not None:
+            raise save_feeds_error
 
 def list(feeds, args):
     "List all the feeds in the database"
