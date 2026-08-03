@@ -145,10 +145,18 @@ def unpause(feeds, args):
 
 def delete(feeds, args):
     "Remove a feed from the database"
+    # Resolve each index/name to its feed first (while the list is still
+    # intact), then dedupe by object identity. ``r2e delete 0 0`` used to
+    # call ``Feeds.remove`` twice on the same feed: the first call removed
+    # it (and its config section), the second raised a bare ``ValueError``
+    # from ``list.remove`` that escaped unhandled and crashed ``r2e``.
     to_remove = []
+    seen = set()
     for index in args.index:
         feed = feeds.index(index)
-        to_remove.append(feed)
+        if feed is not None and id(feed) not in seen:
+            seen.add(id(feed))
+            to_remove.append(feed)
     for feed in to_remove:
         _LOG.info('deleting feed {}'.format(feed))
         feeds.remove(feed)

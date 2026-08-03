@@ -402,6 +402,25 @@ def webserver_for_test_send(queue):
     finally:
         httpd.server_close()
 
+class TestRunCommands(unittest.TestCase):
+    "Exercise edge cases in the CLI dispatch (command.run, delete, ...)"
+
+    def test_delete_duplicate_indices_does_not_crash(self):
+        "``r2e delete 0 0`` dedupes instead of crashing the batch"
+        # Previously the same feed was appended to ``to_remove`` twice;
+        # the first ``Feeds.remove`` deleted it (and its config section),
+        # the second raised a bare ``ValueError`` from ``list.remove``
+        # that escaped unhandled and aborted ``r2e``.
+        with ExecContext("[DEFAULT]\nto = me@example.com") as ctx:
+            ctx.call("add", "dup", "https://example.com/feed.xml")
+            res = ctx.call("delete", "0", "0")
+            self.assertEqual(res.returncode, 0)
+            self.assertNotIn('Traceback', res.stderr)
+            # The feed is gone after the (deduped) single delete.
+            listing = ctx.call("list")
+            self.assertEqual(listing.stdout.strip(), '')
+
+
 class TestSend(unittest.TestCase):
     "Send email using the various email-protocol choices"
     def setUp(self):
