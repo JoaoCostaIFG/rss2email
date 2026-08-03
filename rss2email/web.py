@@ -240,7 +240,8 @@ def _is_csrf_safe(self):
         port = parts.port  # None if not specified
         if host is None:
             return False
-        if exp_host is not None and host != exp_host:
+        if exp_host is not None and (
+                _loopback_equiv(host) != _loopback_equiv(exp_host)):
             return False
         if port is not None and port != exp_port:
             return False
@@ -256,6 +257,21 @@ def _is_csrf_safe(self):
 
 
 _MAX_FORM_BYTES = 1 * 1024 * 1024  # 1 MiB; admin-UI form bodies are tiny
+
+
+_LOOPBACK_HOSTS = {'127.0.0.1', '::1', 'localhost'}
+
+
+def _loopback_equiv(host):
+    """Collapse loopback aliases so 127.0.0.1 / ::1 / localhost compare equal.
+
+    A server bound to ``127.0.0.1`` is the same origin as ``localhost`` from
+    a browser's standpoint; rejecting a same-machine POST just because the
+    user typed ``http://localhost:port`` (so ``Origin: http://localhost``)
+    would make the UI unusable. ``localhost`` and the two loopback IP
+    literals are treated as one equivalence class for the CSRF host check.
+    """
+    return 'loopback' if host in _LOOPBACK_HOSTS else host
 
 
 def make_handler(configfiles, datafile_path, write_lock):

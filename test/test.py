@@ -817,6 +817,22 @@ class TestWeb(unittest.TestCase):
         res = self.ctx.call('list')
         self.assertEqual(res.stdout.strip(), '')
 
+    def test_csrf_accepts_loopback_alias_for_default_bind(self):
+        ("A POST whose Origin Host is ``localhost`` is same-origin with a "
+         "server bound to ``127.0.0.1`` (and vice-versa), so it must not "
+         "be rejected as cross-site. The default ``r2e web`` bind is "
+         "127.0.0.1, but users reach it via http://localhost:PORT.")
+        self.ctx.call('add', 'keep', 'https://example.com/feed.xml')
+        # Same-origin via the loopback alias: must be accepted.
+        status, _, _ = self._req_with_headers(
+            'POST', '/delete',
+            {'Host': '127.0.0.1:{}'.format(self.port),
+             'Origin': 'http://localhost:{}'.format(self.port)},
+            form={'index': '0'})
+        self.assertEqual(status, 303)
+        res = self.ctx.call('list')
+        self.assertEqual(res.stdout.strip(), '')
+
     def test_negative_content_length_is_rejected(self):
         "A negative Content-Length no longer bypasses the body-size cap"
         # ``rfile.read(-1)`` reads until EOF, so before the guard a
