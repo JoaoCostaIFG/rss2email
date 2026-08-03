@@ -810,12 +810,18 @@ class Feed (object):
         feed = parsed.feed
         data['feed-title'] = feed.get('title', '')
         for x in [entry, feed]:
-            if 'name' in x.get('author_detail', []):
-                if x.author_detail.name:
-                    data['author'] = x.author_detail.name
+            # ``x.get('author_detail', [])`` returns the default only when
+            # the key is *absent*; feedparser may also leave the value as
+            # ``None`` for entries without an author, and ``'name' in None``
+            # raises ``TypeError``. Guard against a falsy detail first.
+            author_detail = x.get('author_detail')
+            if author_detail and 'name' in author_detail:
+                if author_detail.name:
+                    data['author'] = author_detail.name
                     break
-        if 'name' in feed.get('publisher_detail', []):
-            data['publisher'] = feed.publisher_detail.name
+        publisher_detail = feed.get('publisher_detail')
+        if publisher_detail and 'name' in publisher_detail:
+            data['publisher'] = publisher_detail.name
         name = self.name_format.format(**data)
         name = name.replace('\n', ' ').strip()
         return _html.unescape(name)
@@ -864,13 +870,19 @@ class Feed (object):
         if self.force_from:
             return self.from_email
         feed = parsed.feed
-        if 'email' in entry.get('author_detail', []):
-            return self._validate_email(entry.author_detail.email)
-        elif 'email' in feed.get('author_detail', []):
-            return self._validate_email(feed.author_detail.email)
+        # See ``_get_entry_name`` for why the detail is fetched and
+        # truth-checked before membership testing (a ``None`` detail
+        # would crash ``'email' in None``).
+        author_detail = entry.get('author_detail')
+        if author_detail and 'email' in author_detail:
+            return self._validate_email(author_detail.email)
+        feed_author_detail = feed.get('author_detail')
+        if feed_author_detail and 'email' in feed_author_detail:
+            return self._validate_email(feed_author_detail.email)
         if self.use_publisher_email:
-            if 'email' in feed.get('publisher_detail', []):
-                return self._validate_email(feed.publisher_detail.email)
+            publisher_detail = feed.get('publisher_detail')
+            if publisher_detail and 'email' in publisher_detail:
+                return self._validate_email(publisher_detail.email)
             if feed.get('errorreportsto', None):
                 return self._validate_email(feed.errorreportsto)
         _LOG.debug('no sender address found, fallback to default')
