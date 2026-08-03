@@ -962,6 +962,15 @@ class Feed (object):
     def _process_entry_content(self, entry, content, subject):
         "Convert entry content to the requested format."
         link = self._get_entry_link(entry)
+        # ``content`` is the dict returned by ``_get_entry_content``, which
+        # is memoized (``@lru_cache``) and is a reference into feedparser's
+        # own entry object. Mutating ``content['type']``/``content['value']``
+        # in place would clobber the cached copy (so a later
+        # ``_get_entry_content`` for the same entry returns the rewritten
+        # value) and corrupt the parsed entry. Work on a shallow copy; only
+        # the two scalar fields we reassign are touched, so a shallow copy
+        # is sufficient.
+        content = dict(content)
         if self.html_mail:
             lines = [
                 '<!DOCTYPE html>',
@@ -1043,7 +1052,8 @@ class Feed (object):
             else:
                 lines = [content['value']]
             lines.append('')
-            lines.append('URL: {}'.format(link))
+            if link:
+                lines.append('URL: {}'.format(link))
             for enclosure in getattr(entry, 'enclosures', []):
                 if getattr(enclosure, 'url', None):
                     lines.append('Enclosure: {}'.format(enclosure.url))

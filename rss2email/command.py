@@ -34,7 +34,7 @@ import re as _re
 import sys as _sys
 import xml.dom.minidom as _minidom
 import xml.sax.saxutils as _saxutils
-import urllib as _urllib
+import urllib.parse as _urllib_parse
 import time as _time
 
 from . import LOG as _LOG
@@ -86,7 +86,7 @@ def run(feeds, args):
             # to debug feeds that timeout, run "r2e -VV run"
             _LOG.info('refreshing feed {}'.format(feed))
             if feed.active:
-                current_server = _urllib.parse.urlparse(feed.url).netloc
+                current_server = _urllib_parse.urlparse(feed.url).netloc
                 try:
                     if last_server == current_server:
                         _LOG.info('fetching from server {current_server} again, sleeping for {interval}s'.format(
@@ -208,12 +208,12 @@ def opmlimport(feeds, args):
             f.close()
     new_feeds = dom.getElementsByTagName('outline')
     name_slug_regexp = _re.compile(r'[^\w\d.-]+')
-    for feed in new_feeds:
-        if feed.hasAttribute('xmlUrl'):
-            url = _saxutils.unescape(feed.getAttribute('xmlUrl'))
+    for outline in new_feeds:
+        if outline.hasAttribute('xmlUrl'):
+            url = _saxutils.unescape(outline.getAttribute('xmlUrl'))
             name = None
-            if feed.hasAttribute('text'):
-                text = _saxutils.unescape(feed.getAttribute('text'))
+            if outline.hasAttribute('text'):
+                text = _saxutils.unescape(outline.getAttribute('text'))
                 if text != url:
                     name = name_slug_regexp.sub('-', text)
             feed = feeds.new_feed(name=name, url=url)
