@@ -261,6 +261,22 @@ def get_message(sender, recipient, subject, body, content_type,
                 html=body)
     return message
 
+def _require_recipients(to_addrs, recipient):
+    """Reject a recipient string that yields no deliverable address.
+
+    ``_recipient_to_addrs`` silently returns ``[]`` for inputs like
+    ``"   "`` or a header containing no parseable addr-spec. Passing an
+    empty ``to_addrs`` to ``smtplib.SMTP.send_message`` issues no
+    ``RCPT TO`` commands, so the message may be accepted by the server
+    but delivered to nobody -- the user sees no error and the mail is
+    silently lost. Raise up front instead.
+    """
+    if not to_addrs:
+        raise _error.RSS2EmailError(
+            'no valid recipient address could be parsed from {!r}; '
+            'refusing to send a message with no recipients'.format(recipient))
+
+
 def smtp_send(recipient, message, config=None, section='DEFAULT'):
     if config is None:
         config = _config.CONFIG
@@ -268,6 +284,7 @@ def smtp_send(recipient, message, config=None, section='DEFAULT'):
     server, port = _split_host_port(
         server, default_port=config.getint(section, 'smtp-port'))
     to_addrs = _recipient_to_addrs(recipient)
+    _require_recipients(to_addrs, recipient)
 
     _LOG.debug('sending message to {} via {}'.format(recipient, server))
     ssl = config.getboolean(section, 'smtp-ssl')
@@ -314,6 +331,7 @@ def lmtp_send(recipient, message, config=None, section='DEFAULT'):
     server, port = _split_host_port(
         server, default_port=config.getint(section, 'lmtp-port'))
     to_addrs = _recipient_to_addrs(recipient)
+    _require_recipients(to_addrs, recipient)
 
     _LOG.debug('sending message to {} via {}'.format(recipient, server))
     lmtp_auth = config.getboolean(section, 'lmtp-auth')
@@ -555,6 +573,8 @@ def sendmail_send(recipient, message, config=None, section='DEFAULT'):
         raise _error.SendmailError() from e
 
 def send(recipient, message, config=None, section='DEFAULT'):
+    if config is None:
+        config = _config.CONFIG
     protocol = config.get(section, 'email-protocol')
     if protocol == 'smtp':
         smtp_send(

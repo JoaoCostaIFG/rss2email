@@ -405,6 +405,25 @@ def webserver_for_test_send(queue):
 class TestRunCommands(unittest.TestCase):
     "Exercise edge cases in the CLI dispatch (command.run, delete, ...)"
 
+    def test_smtp_send_rejects_whitespace_recipient(self):
+        "A recipient that parses to no address raises instead of dropping mail"
+        # ``_recipient_to_addrs('   ')`` returns ``[]``; passing that to
+        # ``smtplib.SMTP.send_message`` issues no RCPT TO, so the message
+        # could be accepted by the server but delivered to nobody (silent
+        # loss). The guard raises before any network connection is opened.
+        config = _rss2email_config.Config()
+        config.read_dict(_rss2email_config.CONFIG)
+        config['DEFAULT']['email-protocol'] = 'smtp'
+        config['DEFAULT']['smtp-server'] = 'localhost'
+        from email.mime.text import MIMEText as _MT
+        msg = _MT('body', 'plain', 'us-ascii')
+        for bad in ('   ', '', '"none" < >'):
+            with self.subTest(recipient=bad):
+                with self.assertRaises(_rss2email_error.RSS2EmailError) as cm:
+                    _rss2email_email.smtp_send(recipient=bad, message=msg,
+                                               config=config)
+                self.assertIn('no valid recipient', str(cm.exception))
+
     def test_delete_duplicate_indices_does_not_crash(self):
         "``r2e delete 0 0`` dedupes instead of crashing the batch"
         # Previously the same feed was appended to ``to_remove`` twice;
