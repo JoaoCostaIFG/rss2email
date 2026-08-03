@@ -191,7 +191,7 @@ def reset(feeds, args):
 
 def opmlimport(feeds, args):
     "Import configuration from OPML."
-    if args.file:
+    if args.file and args.file != '-':
         _LOG.info('importing feeds from {}'.format(args.file))
         f = open(args.file, 'rb')
     else:
@@ -204,7 +204,7 @@ def opmlimport(feeds, args):
             raise _error.OPMLReadError() from e
     finally:
         # Don't close stdin; only the user-supplied file is ours.
-        if args.file:
+        if args.file and args.file != '-':
             f.close()
     new_feeds = dom.getElementsByTagName('outline')
     name_slug_regexp = _re.compile(r'[^\w\d.-]+')
@@ -223,7 +223,7 @@ def opmlimport(feeds, args):
 
 def opmlexport(feeds, args):
     "Export configuration to OPML."
-    if args.file:
+    if args.file and args.file != '-':
         _LOG.info('exporting feeds to {}'.format(args.file))
         f = open(args.file, 'wb')
     else:
@@ -250,7 +250,7 @@ def opmlexport(feeds, args):
             b'</opml>\n')
     finally:
         # Don't close stdout; only the user-supplied file is ours.
-        if args.file:
+        if args.file and args.file != '-':
             f.close()
 
 def web(feeds, args):

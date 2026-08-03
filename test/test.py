@@ -711,6 +711,23 @@ class TestOPML(unittest.TestCase):
 
             self.assertEqual(content["feeds"][0]["name"], self.feed_name)
 
+    def test_opml_import_from_stdin_dash(self):
+        "``r2e opmlimport -`` reads the OPML from stdin (CLI convention)"
+        # Previously ``opmlimport -`` fell through to ``open('-', 'rb')``
+        # and raised FileNotFoundError, because '-' wasn't recognized as
+        # the standard shortcut for stdin.
+        with ExecContext(self.cfg) as ctx:
+            p = subprocess.run(
+                [sys.executable, r2e_path,
+                 '-c', str(ctx.cfg_path), '-d', str(ctx.data_path),
+                 'opmlimport', '-'],
+                input=self.opml_content,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with ctx.data_path.open('r') as f:
+                content = json.load(f)
+            self.assertEqual(content["feeds"][0]["name"], self.feed_name)
+
 
 class TestWeb(unittest.TestCase):
     "Exercise the `r2e web` management UI"
