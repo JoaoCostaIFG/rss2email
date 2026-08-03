@@ -128,6 +128,18 @@ _URL_ATTR = _re.compile(
 _DANGEROUS_URL_SCHEMES = ('javascript:', 'vbscript:', 'mocha:', 'livescript:')
 
 
+def _make_message_id():
+    """Build a valid RFC-5322 Message-ID.
+
+    ``platform.node()`` can return an empty string on minimal container
+    images, leaving ``<uuid@>``, which some SMTP servers reject. Fall
+    back to ``localhost`` so the left-hand side and the right-hand side
+    of the ``@`` are both non-empty.
+    """
+    host = platform.node() or 'localhost'
+    return '<{}@{}>'.format(_uuid.uuid4(), host)
+
+
 def _sanitize_html(body):
     """Best-effort strip of dangerous HTML constructs from feed content.
 
@@ -613,7 +625,7 @@ class Feed (object):
         sender = self._get_entry_email(parsed=parsed, entry=entry)
         subject = self._get_entry_subject(parsed=parsed, entry=entry)
 
-        message_id = '<{0}@{1}>'.format(_uuid.uuid4(), platform.node())
+        message_id = _make_message_id()
         in_reply_to = old_state.get('message_id') if old_state is not None else None
         extra_headers = _collections.OrderedDict((
                 ('Date', self._get_entry_date(entry)),
@@ -1106,7 +1118,7 @@ class Feed (object):
             digest = _MIMEMultipart('mixed')
         digest['To'] = _formataddr(_parseaddr(self.to))  # Encodes with utf-8 as necessary
         digest['Subject'] = 'digest for {}'.format(self.name)
-        digest['Message-ID'] = '<{0}@{1}>'.format(_uuid.uuid4(), platform.node())
+        digest['Message-ID'] = _make_message_id()
         digest['User-Agent'] = self.user_agent
         digest['List-ID'] = '<{}.localhost>'.format(self.name)
         digest['List-Post'] = 'NO (posting not allowed on this list)'

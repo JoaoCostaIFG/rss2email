@@ -42,7 +42,6 @@ import collections as _collections
 import os as _os
 import json as _json
 import pickle as _pickle
-import sys as _sys
 
 from . import LOG as _LOG
 from . import config as _config
@@ -55,8 +54,11 @@ try:
 except ImportError:
     UNIX = False
 
-# Path to the filesystem root, '/' on POSIX.1 (IEEE Std 1003.1-2008).
-ROOT_PATH = _os.path.splitdrive(_sys.executable)[0] or _os.sep
+# Path to the filesystem root, '/' on POSIX. Used only to build the
+# XDG_CONFIG_DIRS fallback (``$ROOT/etc/xdg``); ``sys.executable`` was a
+# poor proxy for this and broke when run from a venv whose interpreter
+# lives outside ``/`` (e.g. ``/home/u/.venv/bin/python``).
+ROOT_PATH = _os.path.abspath(_os.sep)
 
 
 class Feeds (list):

@@ -283,20 +283,29 @@ def smtp_send(recipient, message, config=None, section='DEFAULT'):
         raise
     except Exception as e:
         raise _error.SMTPConnectionError(server=server) from e
-    if smtp_auth:
-        username = config.get(section, 'smtp-username')
-        password = config.get(section, 'smtp-password')
+    try:
+        if smtp_auth:
+            username = config.get(section, 'smtp-username')
+            password = config.get(section, 'smtp-password')
+            try:
+                if not ssl:
+                    smtp.starttls(context=context)
+                smtp.login(username, password)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                raise _error.SMTPAuthenticationError(
+                    server=server, username=username) from e
+        smtp.send_message(message, config.get(section, 'from'), to_addrs)
+    finally:
+        # Always close the socket so a send/login failure doesn't leak an
+        # open TCP connection across errors. ``quit()`` may itself raise
+        # (e.g. the server already hung up); swallow that so the real
+        # exception propagates.
         try:
-            if not ssl:
-                smtp.starttls(context=context)
-            smtp.login(username, password)
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            raise _error.SMTPAuthenticationError(
-                server=server, username=username) from e
-    smtp.send_message(message, config.get(section, 'from'), to_addrs)
-    smtp.quit()
+            smtp.quit()
+        except Exception:
+            pass
 
 def lmtp_send(recipient, message, config=None, section='DEFAULT'):
     if config is None:
@@ -314,18 +323,24 @@ def lmtp_send(recipient, message, config=None, section='DEFAULT'):
         raise
     except Exception as e:
         raise _error.SMTPConnectionError(server=server) from e
-    if lmtp_auth:
-        username = config.get(section, 'lmtp-username')
-        password = config.get(section, 'lmtp-password')
+    try:
+        if lmtp_auth:
+            username = config.get(section, 'lmtp-username')
+            password = config.get(section, 'lmtp-password')
+            try:
+                lmtp.login(username, password)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                raise _error.SMTPAuthenticationError(
+                    server=server, username=username) from e
+        lmtp.send_message(message, config.get(section, 'from'), to_addrs)
+    finally:
+        # Always close the socket; see ``smtp_send`` for the rationale.
         try:
-            lmtp.login(username, password)
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            raise _error.SMTPAuthenticationError(
-                server=server, username=username) from e
-    lmtp.send_message(message, config.get(section, 'from'), to_addrs)
-    lmtp.quit()
+            lmtp.quit()
+        except Exception:
+            pass
 
 def imap_send(message, config=None, section='DEFAULT'):
     if config is None:
@@ -493,7 +508,9 @@ def _flatten(message):
     except UnicodeEncodeError as e:
         # HACK: work around deficiencies in BytesGenerator
         _LOG.warning(e)
-        b = message.as_string().encode(str(message.get_charset()))
+        charset = message.get_charset()
+        charset_name = str(charset) if charset is not None else 'utf-8'
+        b = message.as_string().encode(charset_name)
         m = _email.message_from_bytes(b)
         if not m:
             raise
