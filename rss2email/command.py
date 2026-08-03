@@ -135,7 +135,35 @@ def list(feeds, args):
             active_char = '*'
         else:
             active_char = ' '
-        print('{}: [{}] {}'.format(i, active_char, feed))
+        fetch_state = _format_fetch_state(feed)
+        if fetch_state:
+            print('{}: [{}] {}  {}'.format(i, active_char, feed, fetch_state))
+        else:
+            print('{}: [{}] {}'.format(i, active_char, feed))
+
+def _format_fetch_state(feed):
+    "Render ``feed``'s last-fetch state for ``r2e list`` (empty if unknown)."
+    status = getattr(feed, 'last_fetch_status', None)
+    if status is None:
+        return '[never fetched]'
+    ts = getattr(feed, 'last_fetch_time', None)
+    when = ''
+    if ts is not None:
+        try:
+            when = _time.strftime(
+                '%Y-%m-%d %H:%M',
+                _time.localtime(ts))
+        except (ValueError, OSError, OverflowError):
+            when = '?'
+    if status == 'ok':
+        http_status = getattr(feed, 'last_fetch_http_status', None)
+        suffix = ''
+        if http_status is not None:
+            suffix = ', HTTP {}'.format(http_status)
+        return '[ok @ {}{}]'.format(when, suffix)
+    # error
+    error_str = getattr(feed, 'last_fetch_error', None) or 'error'
+    return '[ERROR @ {}: {}]'.format(when, error_str)
 
 def _set_active(feeds, args, active=True):
     "Shared by `pause` and `unpause`."

@@ -332,6 +332,14 @@ Names may contain letters, digits, ``._-``, spaces, and the common
         'etag',
         'modified',
         'seen',
+        # outcome of the most recent ``run()`` fetch attempt. ``last_fetch_status``
+        # is one of ``'ok'``/``'error'``/``None`` (never fetched). The other three
+        # carry the matching timestamp/error string/HTTP status code (or ``None``
+        # when not applicable, e.g. a timeout has no HTTP status).
+        'last_fetch_status',
+        'last_fetch_time',
+        'last_fetch_error',
+        'last_fetch_http_status',
         ]
 
     ## saved/loaded from ConfigParser instance
@@ -518,6 +526,13 @@ Names may contain letters, digits, ``._-``, spaces, and the common
         self.etag = None
         self.modified = None
         self.seen = {} # type: Dict[str, Dict[str, Any]]
+        # outcome of the most recent fetch; reset when a feed is reset
+        # (e.g. ``r2e reset``) so stale state from a removed feed cannot
+        # reappear. See ``_dynamic_attributes`` for the meaning of each.
+        self.last_fetch_status = None
+        self.last_fetch_time = None
+        self.last_fetch_error = None
+        self.last_fetch_http_status = None
 
     def _set_name(self, name):
         if not self._name_regexp.match(name):
@@ -1152,44 +1167,81 @@ Names may contain letters, digits, ``._-``, spaces, and the common
         if clean:
             self.etag = None
             self.modified = None
-        parsed = self._fetch()
+        # Wrap fetch + processing so an ``RSS2EmailError`` (HTTP error,
+        # timeout, invalid config, processing failure, ...) is recorded
+        # into the feed's persisted last-fetch state before being
+        # re-raised for ``command.run``'s existing logger to handle.
+        # Non-RSS2EmailError exceptions are intentionally *not* caught
+        # here: those still abort the whole run, consistent with prior
+        # behaviour (see ``command.run``).
+        try:
+            parsed = self._fetch()
 
-        if clean and len(parsed.entries) > 0:
-            for guid in self.seen:
-                self.seen[guid]['old'] = True
+            if clean and len(parsed.entries) > 0:
+                for guid in self.seen:
+                    self.seen[guid]['old'] = True
 
-        if self.digest:
-            type = self.digest_type
-            if type not in ['multipart/digest', 'multipart/mixed']:
-                raise _error.InvalidDigestType(type)
-            digest = self._new_digest()
-            seen = []
-            sender = None  # bound here so the post-loop send can't read a
-                           # loop-variable leak when ``seen`` is empty.
-            for (guid, state, sender, message) in self._process(parsed):
-                _LOG.debug('new message: {}'.format(message['Subject']))
-                seen.append((guid, state))
-                self._append_to_digest(digest=digest, message=message)
-            if seen:
-                if self.digest_post_process:
-                    digest = self.digest_post_process(feed=self, parsed=parsed, seen=seen, message=digest)
-                    if not digest:
-                        return
-                _LOG.debug('new digest for {}'.format(self))
-                if send:
-                    self._send_digest(digest=digest, sender=sender)
-                for (guid, state) in seen:
+            if self.digest:
+                type = self.digest_type
+                if type not in ['multipart/digest', 'multipart/mixed']:
+                    raise _error.InvalidDigestType(type)
+                digest = self._new_digest()
+                seen = []
+                sender = None  # bound here so the post-loop send can't read a
+                               # loop-variable leak when ``seen`` is empty.
+                for (guid, state, sender, message) in self._process(parsed):
+                    _LOG.debug('new message: {}'.format(message['Subject']))
+                    seen.append((guid, state))
+                    self._append_to_digest(digest=digest, message=message)
+                if seen:
+                    if self.digest_post_process:
+                        digest = self.digest_post_process(feed=self, parsed=parsed, seen=seen, message=digest)
+                        if not digest:
+                            # The hook signalled "drop this digest". The
+                            # fetch itself succeeded, so record a success
+                            # before returning (the success block below
+                            # is what normally does this, but we bypass it).
+                            self.last_fetch_status = 'ok'
+                            self.last_fetch_time = _time.time()
+                            self.last_fetch_error = None
+                            self.last_fetch_http_status = getattr(parsed, 'status', None)
+                            return
+                    _LOG.debug('new digest for {}'.format(self))
+                    if send:
+                        self._send_digest(digest=digest, sender=sender)
+                    for (guid, state) in seen:
+                        self.seen[guid] = state
+            else:
+                for (guid, state, sender, message) in self._process(parsed):
+                    _LOG.debug('new message: {}'.format(message['Subject']))
+                    if send:
+                        self._send(sender=sender, message=message)
+                        state['message_id'] = str(message["Message-ID"])
                     self.seen[guid] = state
-        else:
-            for (guid, state, sender, message) in self._process(parsed):
-                _LOG.debug('new message: {}'.format(message['Subject']))
-                if send:
-                    self._send(sender=sender, message=message)
-                    state['message_id'] = str(message["Message-ID"])
-                self.seen[guid] = state
+        except _error.RSS2EmailError as e:
+            # A 301/308 redirect or 410 Gone is *not* an error -- those
+            # branches return normally out of ``_check_for_errors`` after
+            # updating ``self.url`` / ``self.active`` -- so they fall
+            # through to the success block below. The only way to land
+            # here is a genuine fetch/processing failure.
+            self.last_fetch_status = 'error'
+            self.last_fetch_time = _time.time()
+            error_str = str(e) or type(e).__name__
+            self.last_fetch_error = error_str
+            self.last_fetch_http_status = getattr(e, 'status', None)
+            raise
 
         self.etag = parsed.get('etag', None)
         self.modified = parsed.get('modified', None)
+        # The fetch (and any processing) succeeded: a 200, a 304 Not
+        # Modified, a 301/308 redirect, or a 410 Gone all reach here.
+        # 304/410 mean the server was reached fine, so they count as
+        # ``'ok'``; ``active`` already reflects the 410 deactivation
+        # separately.
+        self.last_fetch_status = 'ok'
+        self.last_fetch_time = _time.time()
+        self.last_fetch_error = None
+        self.last_fetch_http_status = getattr(parsed, 'status', None)
 
         if clean and len(parsed.entries) > 0:
             # A feed might only show the newest N entries, but if the feed

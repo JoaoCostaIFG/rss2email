@@ -388,6 +388,55 @@ class TestFetch(unittest.TestCase):
                 self.assertIn("seen", content["feeds"][0])
         self.assertEqual(queue.get(), "done")
 
+    def test_fetch_state_recorded(self):
+        "Successful and failed fetches are persisted as last-fetch state"
+        standard_cfg = """[DEFAULT]
+        to = example@example.com
+        feed-timeout = 30
+        """
+
+        # --- success path ---------------------------------------------
+        queue = multiprocessing.Queue()
+        webserver_proc = multiprocessing.Process(
+            target=webserver_for_test_if_fetch, args=(queue, 10))
+        webserver_proc.start()
+        port = queue.get()
+
+        with ExecContext(standard_cfg) as ctx:
+            ctx.call("add", 'good',
+                     'http://127.0.0.1:{port}/disqus/feed.rss'.format(port=port))
+            ctx.call("run", "--no-send")
+            self.assertTrue(_os.path.exists(ctx.data_path))
+            with ctx.data_path.open('r') as f:
+                content = json.load(f)
+            feed_state = content["feeds"][0]
+            self.assertEqual(feed_state["last_fetch_status"], "ok")
+            self.assertIsNotNone(feed_state["last_fetch_time"])
+            self.assertIsNone(feed_state["last_fetch_error"])
+            self.assertIsInstance(feed_state["last_fetch_http_status"], int)
+        self.assertEqual(queue.get(), "done")
+
+        # --- error path (HTTP 404 from a missing path) ----------------
+        queue = multiprocessing.Queue()
+        webserver_proc = multiprocessing.Process(
+            target=webserver_for_test_if_fetch, args=(queue, 10))
+        webserver_proc.start()
+        port = queue.get()
+
+        with ExecContext(standard_cfg) as ctx:
+            ctx.call("add", 'bad',
+                     'http://127.0.0.1:{port}/does-not-exist'.format(port=port))
+            ctx.call("run", "--no-send")
+            with ctx.data_path.open('r') as f:
+                content = json.load(f)
+            feed_state = content["feeds"][0]
+            self.assertEqual(feed_state["last_fetch_status"], "error")
+            self.assertIsNotNone(feed_state["last_fetch_time"])
+            self.assertIsNotNone(feed_state["last_fetch_error"])
+            # SimpleHTTPRequestHandler returns 404 for a missing file.
+            self.assertEqual(feed_state["last_fetch_http_status"], 404)
+        self.assertEqual(queue.get(), "done")
+
 
 def webserver_for_test_send(queue):
     httpd = http.server.HTTPServer(('', 0), NoLogHandler)
@@ -516,6 +565,38 @@ class TestRunCommands(unittest.TestCase):
         self.assertIn('JSON', msg)
         self.assertIn('corrupt', msg)
         self.assertNotIn('R2E_LEGACY_PICKLE', msg)
+        feeds.close()
+
+    def test_datafile_v2_upgrades_to_v3_with_fetch_state(self):
+        "A version-2 datafile loads after backfilling the new fetch-state keys"
+        # A v2 datafile has no last_fetch_* keys; ``Feed.__setstate__``
+        # rejects state missing the keys, so the v2->v3 migration in
+        # ``Feeds._upgrade_state_data`` must backfill them before load.
+        import codecs as _codecs
+        import tempfile
+        tmpdir = tempfile.TemporaryDirectory(prefix='r2e-v2-')
+        self.addCleanup(tmpdir.cleanup)
+        data_path = Path(tmpdir.name) / 'rss2email.json'
+        v2_state = _rss2email_feed.Feed(name='legacy').get_state()
+        # Strip the v3 keys to synthesise an authentic v2 feed dict.
+        v2_state.pop('last_fetch_status', None)
+        v2_state.pop('last_fetch_time', None)
+        v2_state.pop('last_fetch_error', None)
+        v2_state.pop('last_fetch_http_status', None)
+        with _codecs.open(data_path, 'w', 'utf-8') as f:
+            json.dump({'version': 2, 'feeds': [v2_state]}, f)
+        cfg = _rss2email_config.Config()
+        cfg.read_dict(_rss2email_config.CONFIG)
+        feeds = _rss2email_feeds.Feeds(
+            configfiles=[], datafile_path=str(data_path), config=cfg)
+        feeds.load()
+        self.assertEqual(len(feeds), 1)
+        feed = feeds[0]
+        self.assertEqual(feed.name, 'legacy')
+        self.assertIsNone(feed.last_fetch_status)
+        self.assertIsNone(feed.last_fetch_time)
+        self.assertIsNone(feed.last_fetch_error)
+        self.assertIsNone(feed.last_fetch_http_status)
         feeds.close()
 
 
@@ -1176,6 +1257,28 @@ class TestWeb(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('Run (send email)', body)
         self.assertIn('Run (no send)', body)
+
+    def test_fetch_state_displayed(self):
+        "The state column shows never-fetched, then ok after a run"
+        self.ctx.call('add', 'test', 'https://example.com/x.xml')
+        status, _, body = self._req('GET', '/')
+        self.assertEqual(status, 200)
+        self.assertIn('class="fetch-none">never fetched</span>', body)
+
+        # Drive a real fetch against a local server serving test feed data.
+        proc, port, queue = self._start_run_target(hold_seconds=0)
+        feed_url = 'http://127.0.0.1:{}/disqus/feed.rss'.format(port)
+        self.ctx.call('add', 'live', feed_url)
+        status, _, _ = self._req('POST', '/run-no-send')
+        self.assertEqual(status, 303)
+        self._wait_for_run_done(timeout=30)
+        # The local server must have been hit.
+        self.assertEqual(queue.get(timeout=5), 'done')
+
+        status, _, body = self._req('GET', '/')
+        self.assertEqual(status, 200)
+        # The successfully fetched feed now shows an ok fetch badge.
+        self.assertIn('class="fetch-ok">fetched ok</span>', body)
 
 
 if __name__ == '__main__':

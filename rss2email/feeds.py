@@ -133,7 +133,7 @@ class Feeds (list):
     >>> feeds.close()
     >>> tmpdir.cleanup()
     """
-    datafile_version = 2
+    datafile_version = 3
     datafile_encoding = 'utf-8'
 
     def __init__(self, configfiles=None, datafile_path=None, config=None):
@@ -377,6 +377,19 @@ class Feeds (list):
                 seen = feed['seen']
                 for guid,id_ in seen.items():
                     seen[guid] = {'id': id_}
+            version = 2
+            data['version'] = version
+        if version == 2:
+            # v3 added per-feed last-fetch state. Backfill the four new
+            # keys onto every feed dict so ``Feed.__setstate__``'s strict
+            # sorted-keys check (``feed.py``) accepts the upgraded state.
+            for feed in data['feeds']:
+                feed.setdefault('last_fetch_status', None)
+                feed.setdefault('last_fetch_time', None)
+                feed.setdefault('last_fetch_error', None)
+                feed.setdefault('last_fetch_http_status', None)
+            version = 3
+            data['version'] = version
             return data
         raise NotImplementedError(
             'cannot convert data file from version {} to {}'.format(

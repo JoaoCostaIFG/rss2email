@@ -69,6 +69,10 @@ th {{ background: #eee; }}
 .url {{ font-family: monospace; word-break: break-all; }}
 .active-yes {{ color: #2a7; font-weight: bold; }}
 .active-no {{ color: #c33; }}
+.fetch-ok {{ color: #2a7; }}
+.fetch-err {{ color: #c33; }}
+.fetch-none {{ color: #888; font-style: italic; }}
+.fetch-detail {{ color: #666; font-size: 12px; }}
 form.inline {{ display: inline; margin: 0; }}
 button {{ font: inherit; cursor: pointer; }}
 .run-status {{ margin: 1rem 0; padding: .75rem; background: #eef;
@@ -138,15 +142,17 @@ def _render_rows_row(index, feed):
     url = _html.escape(feed.url or '')
     to = _html.escape(feed.to or '')
     if feed.active:
-        state = '<span class="active-yes">active</span>'
+        active = '<span class="active-yes">active</span>'
         toggle = ('<form class="inline" method="post" action="/pause">'
                   '<input type="hidden" name="index" value="{i}">'
                   '<button type="submit">pause</button></form>').format(i=index)
     else:
-        state = '<span class="active-no">paused</span>'
+        active = '<span class="active-no">paused</span>'
         toggle = ('<form class="inline" method="post" action="/unpause">'
                   '<input type="hidden" name="index" value="{i}">'
                   '<button type="submit">unpause</button></form>').format(i=index)
+    fetch = _render_fetch_state(feed)
+    state = '{}<br>{}'.format(active, fetch)
     delete = ('<form class="inline" method="post" action="/delete" '
               'data-name="{name}">'
               '<input type="hidden" name="index" value="{i}">'
@@ -163,6 +169,27 @@ def _render_rows_row(index, feed):
         '</tr>').format(
             i=index, name=name, url=url, to=to,
             state=state, toggle=toggle, delete=delete)
+
+
+def _render_fetch_state(feed):
+    "Render ``feed``'s last-fetch state for the web UI state column."
+    status = getattr(feed, 'last_fetch_status', None)
+    if status is None:
+        return '<span class="fetch-none">never fetched</span>'
+    when = _fmt_time(getattr(feed, 'last_fetch_time', None))
+    if status == 'ok':
+        http_status = getattr(feed, 'last_fetch_http_status', None)
+        detail = ''
+        if http_status is not None:
+            detail = ' <span class="fetch-detail">(HTTP {})</span>'.format(
+                int(http_status))
+        return ('<span class="fetch-ok">fetched ok</span> '
+                '<span class="fetch-detail">@ {}</span>{}').format(
+                    when, detail)
+    error_str = getattr(feed, 'last_fetch_error', None) or 'error'
+    return ('<span class="fetch-err">error</span> '
+            '<span class="fetch-detail">@ {}: {}</span>').format(
+                when, _html.escape(error_str))
 
 
 def _render_run_block():
