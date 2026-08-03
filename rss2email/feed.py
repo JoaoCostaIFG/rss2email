@@ -570,18 +570,19 @@ Names may contain letters, digits, ``._-``, spaces, and the common
     def _process(self, parsed, force_latest=False):
         _LOG.info('process {}'.format(self))
         self._check_for_errors(parsed)
-        # The feedparser ``entries`` list is newest-last, so we iterate it
-        # in reverse; the very first yielded entry is therefore the most
-        # recent one in the feed. Track that so ``--force-latest`` can
-        # target exactly one entry per feed regardless of how many unseen
-        # entries follow it.
-        first = True
-        for entry in reversed(parsed.entries):
+        # feedparser returns entries newest-first (``parsed.entries[0]``
+        # is the most recent post). The loop iterates in reverse so the
+        # persisted ``seen`` dict is built oldest-to-newest, matching the
+        # ordering assumptions of the ``--clean`` pruning logic. As a
+        # result the *latest* entry is reached last here, so
+        # ``--force-latest`` targets the final iteration.
+        entries = list(reversed(parsed.entries))
+        last = len(entries) - 1
+        for i, entry in enumerate(entries):
             _LOG.debug('processing {}'.format(entry.get('id', 'no-id')))
-            force = force_latest and first
+            force = force_latest and i == last
             processed = self._process_entry(
                 parsed=parsed, entry=entry, force=force)
-            first = False
             if processed:
                 guid, new_state, sender, message = processed
                 if self.post_process:
