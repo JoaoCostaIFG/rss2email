@@ -2,10 +2,13 @@ import os
 import sys
 import unittest
 from email.message import Message
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from rss2email.feed import Feed
+from rss2email.post_process import redirect as _redirect
 
 
 class _Parsed:
@@ -79,6 +82,77 @@ class TestPostProcess(unittest.TestCase):
         self.assertEqual(len(results), 1)
         _, _, _, message = results[0]
         self.assertEqual(message['Subject'], 'mutated')
+
+
+class TestRedirectHook(unittest.TestCase):
+    """The redirect post-process hook must not crash or destroy structure
+    when handed a multipart message (e.g. ``multipart-html = yes``).
+
+    ``get_payload(decode=True)`` returns None for multipart, so the old
+    code raised ``TypeError: decoding to str: need a bytes-like object,
+    NoneType``; even if it hadn't, ``set_payload(str, charset=...)`` would
+    have overwritten the parts list and collapsed the multipart message
+    into a single string.
+    """
+
+    def _feed(self):
+        return Feed(name='redir-test-feed', url='http://example.com/feed',
+                    to='a@b.com')
+
+    def _entry(self, link):
+        return {'link': link, 'enclosures': [], 'links': []}
+
+    def test_multipart_message_is_returned_unchanged(self):
+        feed = self._feed()
+        # Build a multipart/alternative message, then have the hook see
+        # it; nothing is faked on the network side because the hook must
+        # bail out *before* following any link for multipart input.
+        msg = MIMEMultipart('alternative')
+        msg.attach(MIMEText('plain body http://feed.example/redir',
+                            'plain', 'us-ascii'))
+        msg.attach(MIMEText('<p>html body <a href="http://feed.example/redir">'
+                            'x</a></p>', 'html', 'us-ascii'))
+        msg['Subject'] = 'multipart entry'
+        original_bytes = msg.as_bytes()
+        out = _redirect.process(
+            feed=feed, parsed=object(), entry=self._entry('http://feed.example/redir'),
+            guid='g', message=msg)
+        self.assertIs(out, msg)
+        self.assertEqual(out.as_bytes(), original_bytes)
+        self.assertEqual(out.get_content_type(), 'multipart/alternative')
+        # Both alternatives must still be present.
+        parts = out.get_payload()
+        self.assertEqual(len(parts), 2)
+        self.assertEqual({p.get_content_type() for p in parts},
+                         {'text/plain', 'text/html'})
+
+    def test_single_part_message_is_still_rewritten(self):
+        # Sanity check: the guard must not disable the hook for the
+        # single-part case it was designed for. Use a link that is not a
+        # redirect (so the network call is a no-op returning the same
+        # URL) to keep the test offline.
+        feed = self._feed()
+        msg = MIMEText(
+            'Visit http://example.com/entry for more.',
+            'plain', 'us-ascii')
+        msg['Subject'] = 'single part entry'
+        class _Resp:
+            def geturl(self):
+                return 'http://example.com/entry'
+        class _Opener:
+            def open(self, request, timeout=None):
+                return _Resp()
+        import urllib.request
+        orig_build = urllib.request.build_opener
+        urllib.request.build_opener = lambda *a, **k: _Opener()
+        try:
+            out = _redirect.process(
+                feed=feed, parsed=object(),
+                entry=self._entry('http://example.com/entry'),
+                guid='g', message=msg)
+        finally:
+            urllib.request.build_opener = orig_build
+        self.assertEqual(out.get_content_type(), 'text/plain')
 
 
 if __name__ == '__main__':

@@ -40,6 +40,19 @@ LOG = _logging.getLogger(__name__)
 
 
 def process(feed, parsed, entry, guid, message):
+    # ``multipart-html`` (and any other multipart-producing config)
+    # hands us a multipart/alternative message. ``get_payload(decode=True)``
+    # returns None for multipart, so ``str(None, encoding)`` below would
+    # raise TypeError; and even if it didn't, ``set_payload(str, ...)``
+    # would overwrite the part list and destroy the multipart structure.
+    # The redirect-following rewrite only makes sense for a single-part
+    # body, so bail out (leaving the message untouched) for multipart.
+    if message.is_multipart():
+        LOG.warning(
+            'redirect hook does not rewrite multipart messages; '
+            'leaving %r unchanged' % (message.get_content_type(),))
+        return message
+
     # decode message
     charsets = message.get_charsets()
     encoding = charsets[0] if charsets else None
