@@ -140,6 +140,43 @@ def _make_message_id():
     return '<{}@{}>'.format(_uuid.uuid4(), host)
 
 
+def _scrub_url_value(value):
+    """Return ``value`` if its scheme is safe to embed, else the empty string.
+
+    Mirrors the inline rewrite that used to live only inside
+    ``_sanitize_html``: strip surrounding quotes/whitespace, lower-case,
+    and reject the known dangerous scripting schemes (``javascript:``,
+    ``vbscript:``, ...). Exposed at module level so the HTML *mail
+    wrapper* (header link, enclosure links, via link) can scrub feed URLs
+    before escaping them -- ``_saxutils.escape`` does not strip URL
+    schemes, so without this a malicious feed could put
+    ``<a href="javascript:...">`` into the wrapper that ``_sanitize_html``
+    never touches (it only sanitizes the feed body, not the wrapper).
+
+    >>> _scrub_url_value('http://example.com/feed')
+    'http://example.com/feed'
+    >>> _scrub_url_value('javascript:alert(1)')
+    ''
+    >>> _scrub_url_value('   javascript:alert(1)   ')
+    ''
+    >>> _scrub_url_value('JaVaScRiPt:alert(1)')
+    ''
+    >>> _scrub_url_value('vbscript:msgbox')
+    ''
+    >>> _scrub_url_value('')
+    ''
+    >>> _scrub_url_value(None)
+    ''
+    """
+    if not value:
+        return ''
+    stripped = value.strip('"\' \t\r\n').lower()
+    for scheme in _DANGEROUS_URL_SCHEMES:
+        if stripped.startswith(scheme):
+            return ''
+    return value
+
+
 def _sanitize_html(body):
     """Best-effort strip of dangerous HTML constructs from feed content.
 
@@ -169,10 +206,8 @@ def _sanitize_html(body):
     body = _STRIP_ON_ATTR.sub('', body)
     def _scrub_url(match):
         prefix, raw = match.group(1), match.group(2)
-        value = raw.strip('"\' \t\r\n').lower()
-        for scheme in _DANGEROUS_URL_SCHEMES:
-            if value.startswith(scheme):
-                return prefix + '""'
+        if _scrub_url_value(raw) == '':
+            return prefix + '""'
         return match.group(0)
     body = _URL_ATTR.sub(_scrub_url, body)
     return body
@@ -949,7 +984,7 @@ class Feed (object):
                     '<body dir="auto">',
                     '<div class="entry" id="entry">',
                     '<h1 class="header"><a href="{}">{}</a></h1>'.format(
-                        _saxutils.escape(link) if link else '',
+                        _saxutils.escape(_scrub_url_value(link)) if link else '',
                         _saxutils.escape(subject)),
                     '<div class="body" id="body">',
                     ])
@@ -964,26 +999,32 @@ class Feed (object):
             lines.append('</div>')
             lines.append('<div class="footer">')
             if link:
+                # The footer re-states the entry's own link; scrub the
+                # scheme here too, for the same reason as the header.
+                safe_link = _scrub_url_value(link)
                 lines.append(
                     '<p>URL: <a href="{0}">{0}</a></p>'.format(
-                        _saxutils.escape(link)))
+                        _saxutils.escape(safe_link)))
             for enclosure in getattr(entry, 'enclosures', []):
                 if getattr(enclosure, 'url', None):
+                    safe_url = _scrub_url_value(enclosure.url)
                     lines.append(
                         '<p>Enclosure: <a href="{0}">{0}</a></p>'.format(
-                            _saxutils.escape(enclosure.url)))
+                            _saxutils.escape(safe_url)))
                 if getattr(enclosure, 'src', None):
+                    safe_src = _scrub_url_value(enclosure.src)
                     lines.append(
                         '<p>Enclosure: <a href="{0}">{0}</a></p>'.format(
-                            _saxutils.escape(enclosure.src)))
+                            _saxutils.escape(safe_src)))
                     lines.append(
-                        '<p><img src="{}" /></p>'.format(_saxutils.escape(enclosure.src)))
+                        '<p><img src="{}" /></p>'.format(_saxutils.escape(safe_src)))
             for elink in getattr(entry, 'links', []):
                 if elink.get('rel', None) == 'via':
                     url = elink['href']
                     title = elink.get('title', url)
+                    safe_url = _scrub_url_value(url)
                     lines.append('<p>Via <a href="{}">{}</a></p>'.format(
-                            _saxutils.escape(url), _saxutils.escape(title)))
+                            _saxutils.escape(safe_url), _saxutils.escape(title)))
             lines.extend([
                     '</div>',  # /footer
                     '</div>',  # /entry
