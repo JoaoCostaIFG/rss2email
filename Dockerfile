@@ -39,12 +39,25 @@ RUN groupadd --gid 1000 rss2email \
  && useradd  --uid 1000 --gid rss2email \
              --home-dir /data --shell /usr/sbin/nologin --no-create-home rss2email
 
+# Pre-create and pre-own the XDG data directories. Docker copies
+# ownership (and contents) from the image path into a freshly-attached
+# named volume on first mount, so this lets an unprivileged named
+# volume start out writable by UID 1000 without any host-side chown
+# or init container.
+RUN mkdir -p /data/config /data/data \
+ && chown -R 1000:1000 /data
+
 # rss2email follows the XDG Base Directory Spec: it reads its config
 # from $XDG_CONFIG_HOME/rss2email.cfg and its feed database from
 # $XDG_DATA_HOME/rss2email.json. Pointing both at subdirectories of
-# /data lets a single bind mount cover everything the application
-# persists across restarts. HOME is set to /data so any library that
-# inspects $HOME (rather than the XDG vars) also lands on the mount.
+# /data lets a single mount cover everything the application persists
+# across restarts. HOME is set to /data so any library that inspects
+# $HOME (rather than the XDG vars) also lands on the mount.
+#
+# The directories themselves are created and owned above (before the
+# USER change) so that a Docker named volume first mounted at /data
+# inherits them already writable by UID 1000 -- no host-side chown
+# or init container required.
 ENV XDG_CONFIG_HOME=/data/config \
     XDG_DATA_HOME=/data/data \
     HOME=/data \

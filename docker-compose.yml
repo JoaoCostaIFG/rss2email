@@ -1,16 +1,14 @@
 # Example docker-compose deployment for the rss2email web UI.
 #
 # The container runs as an unprivileged user (UID/GID 1000) with a
-# read-only root filesystem; only the bind-mounted ./rss2email-data
-# directory and a tmpfs /tmp are writable.
+# read-only root filesystem; only the named data volume and a tmpfs
+# /tmp are writable.
 #
-# Before starting, create the data directory on the host and make it
-# owned by UID/GID 1000 so the in-container user can read and write it:
-#
-#     mkdir -p rss2email-data
-#     chown -R 1000:1000 rss2email-data
-#
-# Then:
+# The image pre-creates and pre-owns /data/config and /data/data
+# (UID/GID 1000) in its build layer. Docker copies that ownership
+# into a freshly-attached named volume on first mount, so the
+# unprivileged in-container user can write to them out of the box --
+# no host-side mkdir/chown or init container is needed.
 #
 #     docker compose up -d
 #
@@ -28,7 +26,7 @@ services:
     # Run as the unprivileged UID/GID 1000 user created in the image.
     user: "1000:1000"
 
-    # The root filesystem is read-only. Only the bind mount below and
+    # The root filesystem is read-only. Only the named volume below and
     # the tmpfs /tmp are writable, which limits what a compromised
     # process can touch.
     read_only: true
@@ -42,8 +40,14 @@ services:
       - "8080:8080"
 
     volumes:
-      # Single bind mount covering config + feed database.
-      #   config: ./rss2email-data/config/rss2email.cfg
-      #   data:   ./rss2email-data/data/rss2email.json
-      # Both are created on first use by the entrypoint.
-      - ./rss2email-data:/data
+      # Single named volume covering config + feed database.
+      #   config: /data/config/rss2email.cfg
+      #   data:   /data/data/rss2email.json
+      # Both subdirectories are pre-created and owned by UID/GID 1000
+      # in the image; the named volume inherits that ownership on first
+      # mount, and the files themselves are created on first use by the
+      # entrypoint.
+      - r2e-data:/data
+
+volumes:
+  r2e-data:
