@@ -29,14 +29,19 @@ There is deliberately no authentication: run this behind your VPN or on
 """
 
 import html as _html
+import logging as _logging
 import signal as _signal
 import threading as _threading
+import time as _time
+import traceback as _traceback
 import urllib.parse as _urlparse
+from argparse import Namespace as _Namespace
 from contextlib import contextmanager as _contextmanager
 from http.server import BaseHTTPRequestHandler as _BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer as _ThreadingHTTPServer
 
 from . import LOG as _LOG
+from . import command as _command
 from . import error as _error
 from . import feeds as _feeds
 
@@ -66,6 +71,16 @@ th {{ background: #eee; }}
 .active-no {{ color: #c33; }}
 form.inline {{ display: inline; margin: 0; }}
 button {{ font: inherit; cursor: pointer; }}
+.run-status {{ margin: 1rem 0; padding: .75rem; background: #eef;
+           border-radius: 4px; }}
+.run-status .tail {{ font-family: monospace; font-size: 12px;
+                     white-space: pre-wrap; background: #fff;
+                     border: 1px solid #ddd; padding: .5rem;
+                     max-height: 12rem; overflow: auto;
+                     margin-top: .5rem; }}
+.run-status .badge-ok {{ color: #2a7; font-weight: bold; }}
+.run-status .badge-error {{ color: #c33; font-weight: bold; }}
+.run-status .badge-running {{ color: #16d; font-weight: bold; }}
 .add-form {{ margin-top: 1.5rem; padding: .75rem; background: #eef;
              border-radius: 4px; }}
 .add-form label {{ display: inline-block; width: 4rem; }}
@@ -79,6 +94,7 @@ a {{ color: #16d; }}
 <body>
 <h1>rss2email feeds</h1>
 {error_block}
+{run_block}
 <table>
 <thead><tr>
 <th>#</th><th>name</th><th>url</th><th>to</th><th>state</th><th>actions</th>
@@ -149,19 +165,81 @@ def _render_rows_row(index, feed):
             state=state, toggle=toggle, delete=delete)
 
 
+def _render_run_block():
+    state = _RUN_STATE
+    parts = ['<section class="run-status">']
+    parts.append('<h2>Run</h2>')
+    parts.append(
+        '<form class="inline" method="post" action="/run">'
+        '<button type="submit">Run (send email)</button></form>')
+    parts.append(
+        ' <form class="inline" method="post" action="/run-no-send">'
+        '<button type="submit">Run (no send)</button></form>')
+    parts.append('<p>')
+    if state['running']:
+        started = state['started']
+        parts.append(
+            '<span class="badge-running">running</span> '
+            '({}) since {}'.format(
+                'send' if state['send'] else 'no-send',
+                _fmt_time(started)))
+    elif state['status'] == 'ok':
+        parts.append(
+            'last run ({}) <span class="badge-ok">ok</span> '
+            'started {}, finished {}'.format(
+                'send' if state['send'] else 'no-send',
+                _fmt_time(state['started']),
+                _fmt_time(state['ended'])))
+    elif state['status'] == 'error':
+        parts.append(
+            'last run ({}) <span class="badge-error">error</span> '
+            'started {}, finished {}: {}'.format(
+                'send' if state['send'] else 'no-send',
+                _fmt_time(state['started']),
+                _fmt_time(state['ended']),
+                _html.escape(state['error'] or '')))
+    else:
+        parts.append('no runs yet. Use the buttons above to fetch '
+                     '(and optionally send) all feeds.')
+    parts.append('</p>')
+    if state['tail']:
+        parts.append('<div class="tail">{}</div>'.format(
+            _html.escape('\n'.join(state['tail']))))
+    parts.append('</section>')
+    return '\n'.join(parts)
+
+
+def _fmt_time(ts):
+    if ts is None:
+        return '?'
+    return _time.strftime('%Y-%m-%d %H:%M:%S', _time.localtime(ts))
+
+
 def _render_index(feeds, error=None):
     rows = []
-    for i, feed in enumerate(feeds):
-        rows.append(_render_rows_row(i, feed))
-    if not rows:
-        rows = ['<tr><td colspan="6" class="empty">no feeds yet '
-                '\u2014 add one below.</td></tr>']
+    if feeds is None:
+        # ``GET /`` while a background run is in progress: the worker
+        # holds the datafile LOCK_EX for the whole run, so opening a
+        # ``Feeds`` instance here would block until the run finishes.
+        # Keep the page responsive (and pollable) by hiding the table
+        # and showing just the run panel.
+        rows = ['<tr><td colspan="6" class="empty">'
+                'feed list is unavailable while a run is in progress; '
+                'it will reappear when the run finishes.</td></tr>']
+    else:
+        for i, feed in enumerate(feeds):
+            rows.append(_render_rows_row(i, feed))
+        if not rows:
+            rows = ['<tr><td colspan="6" class="empty">no feeds yet '
+                    '\u2014 add one below.</td></tr>']
     if error:
         error_block = '<div class="error">{}</div>'.format(_html.escape(error))
     else:
         error_block = ''
     return _PAGE_TEMPLATE.format(
-        error_block=error_block, rows='\n'.join(rows))
+        error_block=error_block,
+        run_block=_render_run_block(),
+        rows='\n'.join(rows))
 
 
 def _redirect(self, location='/'):
@@ -259,6 +337,127 @@ def _is_csrf_safe(self):
 _MAX_FORM_BYTES = 1 * 1024 * 1024  # 1 MiB; admin-UI form bodies are tiny
 
 
+# --- Background "r2e run" orchestrator -------------------------------------
+#
+# The web UI deliberately does not hold the process-global ``rss2email.lock``
+# (see the comment in ``rss2email.main`` about the ``web`` subcommand); per-
+# request ``Feeds`` instances take the datafile ``LOCK_EX`` sidecar, which is
+# exactly what a standalone ``r2e run`` invocation does too. So a run kicked
+# off from the UI coexists with a concurrent cron ``r2e run`` the same way
+# two CLI invocations would: whichever gets the lock first wins, the other
+# blocks on ``lockf`` until the first finishes.
+#
+# State is in-memory only (this is an admin tool; restart forgets history)
+# and serialized by ``_RUN_GUARD`` so two button clicks can't start twin
+# runs that would just fight each other for the datafile lock.
+_RUN_GUARD = _threading.Lock()
+_RUN_TAIL_LINES = 200
+_RUN_STATE = {
+    'running': False,
+    'send': None,        # True = send run, False = --no-send run
+    'started': None,     # unix timestamp (float)
+    'ended': None,       # unix timestamp (float)
+    'status': None,      # 'ok' | 'error' | None
+    'error': None,        # short error string (status == 'error')
+    'tail': [],          # list of recent log lines (oldest first)
+}
+
+
+def _reset_run_state(send):
+    _RUN_STATE.update({
+        'running': True,
+        'send': send,
+        'started': _time.time(),
+        'ended': None,
+        'status': None,
+        'error': None,
+        'tail': [],
+    })
+
+
+def _run_worker(send, configfiles, datafile_path):
+    """Background thread body: drive ``rss2email.command.run`` once.
+
+    A throwaway logging handler captures the run's output into
+    ``_RUN_STATE['tail']`` so the index page can show the recent log
+    lines (refreshing a stuck feed can take many minutes; without a tail
+    the user has no feedback that anything is happening).
+    """
+    class _TailHandler(_logging.Handler):
+        def emit(self, record):
+            try:
+                msg = self.format(record)
+            except Exception:
+                msg = record.getMessage()
+            _RUN_STATE['tail'].append(msg)
+            if len(_RUN_STATE['tail']) > _RUN_TAIL_LINES:
+                del _RUN_STATE['tail'][:-_RUN_TAIL_LINES]
+
+    tail_handler = _TailHandler()
+    tail_handler.setLevel(_logging.INFO)
+    tail_handler.setFormatter(
+        _logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    # Attach to the ``rss2email`` logger (not root) and temporarily
+    # lower its level to INFO so the per-feed "refreshing feed" lines
+    # reach the tail. Without this the logger (default level ERROR in
+    # the web subprocess, which never got ``-V``) would drop INFO records
+    # before any handler sees them.
+    target_logger = _LOG
+    orig_level = target_logger.level
+    target_logger.addHandler(tail_handler)
+    target_logger.setLevel(_logging.INFO)
+    try:
+        feeds = _feeds.Feeds(
+            configfiles=list(configfiles) if configfiles else None,
+            datafile_path=datafile_path)
+        feeds.load()
+        try:
+            args = _Namespace(index=[], send=send, clean=False)
+            _command.run(feeds=feeds, args=args)
+            _RUN_STATE['status'] = 'ok'
+        except Exception as e:
+            _RUN_STATE['status'] = 'error'
+            _RUN_STATE['error'] = '{}: {}'.format(type(e).__name__, e)
+            _LOG.error('background run failed:\n%s', _traceback.format_exc())
+        finally:
+            try:
+                feeds.close()
+            except Exception:
+                pass
+    except Exception as e:
+        # Setup/teardown failure (couldn't acquire datafile lock, disk
+        # error, etc.) -- still mark the run done so the UI stops saying
+        # "running".
+        _RUN_STATE['status'] = 'error'
+        _RUN_STATE['error'] = '{}: {}'.format(type(e).__name__, e)
+        _LOG.error('background run could not start:\n%s',
+                   _traceback.format_exc())
+    finally:
+        target_logger.removeHandler(tail_handler)
+        target_logger.setLevel(orig_level)
+        _RUN_STATE['running'] = False
+        _RUN_STATE['ended'] = _time.time()
+
+
+def _start_run(send, configfiles, datafile_path):
+    """Try to start a background run. Return ``None`` on success, else an
+    error string explaining why it didn't start (already running)."""
+    if not _RUN_GUARD.acquire(blocking=False):
+        return 'A run is already in progress. Wait for it to finish.'
+    try:
+        if _RUN_STATE['running']:
+            return 'A run is already in progress. Wait for it to finish.'
+        _reset_run_state(send=send)
+    finally:
+        _RUN_GUARD.release()
+    t = _threading.Thread(
+        target=_run_worker,
+        args=(send, configfiles, datafile_path),
+        daemon=True)
+    t.start()
+    return None
+
+
 _LOOPBACK_HOSTS = {'127.0.0.1', '::1', 'localhost'}
 
 
@@ -306,6 +505,13 @@ def make_handler(configfiles, datafile_path, write_lock):
                 if path != '/':
                     self._redirect('/')
                     return
+                # While a background run holds the datafile lock, do not
+                # try to load feeds here -- the lockf wait would freeze
+                # the page until the run finishes. Render the run panel
+                # alone so the user can still see the live status/tail.
+                if _RUN_STATE['running']:
+                    _write_html(self, _render_index(feeds=None))
+                    return
                 with _feeds_ctx() as feeds:
                     body = _render_index(feeds)
                 _write_html(self, body)
@@ -332,6 +538,10 @@ def make_handler(configfiles, datafile_path, write_lock):
                         self._handle_set_active(active=False)
                     elif path == '/unpause':
                         self._handle_set_active(active=True)
+                    elif path == '/run':
+                        self._handle_run(send=True)
+                    elif path == '/run-no-send':
+                        self._handle_run(send=False)
                     else:
                         self._redirect('/')
                 except _feeds_error_renderer as e:
@@ -351,8 +561,15 @@ def make_handler(configfiles, datafile_path, write_lock):
                 try:
                     feed = feeds.new_feed(name=name, url=url, to=to)
                 except _error.DuplicateFeedName:
+                    # DuplicateFeedName subclasses InvalidFeedName, so it
+                    # must be caught first to get the right message.
                     raise _feeds_error_renderer(
                         'A feed named {!r} already exists.'.format(name))
+                except _error.InvalidFeedName:
+                    raise _feeds_error_renderer(
+                        'Invalid feed name {!r}: names may contain '
+                        'letters, digits, spaces, and '
+                        '() ! ? + & , ; : \' " @ / ~ . _ -.'.format(name))
                 if not feed.to:
                     raise _feeds_error_renderer(
                         'No destination email address is set. Add a '
@@ -393,6 +610,29 @@ def make_handler(configfiles, datafile_path, write_lock):
                         'No feed at index {!r}.'.format(index))
                 feed.active = active
                 feeds.save_config()
+            self._redirect('/')
+
+        def _handle_run(self, send):
+            # Kicking off a run does NOT touch the feeds list itself; it
+            # spins up a background thread that opens its own ``Feeds``
+            # instance (taking the datafile lockf just like a CLI
+            # ``r2e run`` would). Reject a second concurrent click so two
+            # button presses can't start twin runs that fight over the
+            # datafile lock. The buttons stay enabled server-side; the
+            # rejection is what prevents the user from queuing work.
+            err = _start_run(
+                send=send,
+                configfiles=configfiles,
+                datafile_path=datafile_path)
+            if err is not None:
+                # A run is already in progress (and holding the datafile
+                # lock), so we must NOT open a Feeds instance here -- it
+                # would block on the lockf until the run finishes, when
+                # the whole point is to reject this second click at once.
+                # Render the index in run-in-progress mode (table hidden),
+                # with the rejection as an inline error.
+                _write_html(self, _render_index(feeds=None, error=err))
+                return
             self._redirect('/')
 
         # reuse the module-level helpers bound to this instance

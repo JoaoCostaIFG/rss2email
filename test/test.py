@@ -1013,6 +1013,170 @@ class TestWeb(unittest.TestCase):
         self.assertEqual(errors, [],
                          'concurrent request errors: {}'.format(errors[:5]))
 
+    def _wait_for_run_done(self, timeout=30):
+        """Poll GET / until the run-status panel reports a finished run.
+
+        Returns the page body once the ``last run ... ok`` or ``error``
+        text appears (or the running badge disappears). Raises
+        AssertionError if the run doesn't finish within ``timeout``.
+        """
+        # Distinct rendered markers for run status. They key on the live
+        # status text (e.g. '<span class="badge-ok">ok'), not the bare
+        # CSS class name, because the <style> block declares every
+        # ``.badge-*`` class and a naive substring check would match
+        # all of them on every page.
+        OK_MARKER = 'class="badge-ok">ok'
+        ERR_MARKER = 'class="badge-error">error'
+        RUNNING_MARKER = 'class="badge-running">running'
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                status, _, body = self._req('GET', '/', form=None)
+            except Exception as exc:
+                raise AssertionError(
+                    'GET / while waiting for run failed: {}\n'
+                    'Server stderr:\n{}'.format(
+                        exc,
+                        self._proc_stderr()))
+            if status != 200:
+                time.sleep(0.05)
+                continue
+            if (OK_MARKER in body or ERR_MARKER in body) and \
+                    RUNNING_MARKER not in body:
+                return body
+            time.sleep(0.1)
+        raise AssertionError(
+            'background run did not finish within {}s.\nServer stderr:\n{}'.format(
+                timeout, self._proc_stderr()))
+
+    def _proc_stderr(self):
+        # The server's stderr is a pipe; reading it blocks if the server
+        # is still alive (it is, during a run). Peek non-blockingly by
+        # reading what's buffered. ``readlines`` on a live pipe may block,
+        # so instead grab the bytes already buffered via ``os.read``.
+        import os as _os
+        import errno as _errno
+        if self.proc.stderr is None:
+            return '<no stderr pipe>'
+        fd = self.proc.stderr.fileno()
+        chunks = []
+        while True:
+            try:
+                _os.set_blocking(fd, False)
+            except (OSError, ValueError):
+                pass
+            try:
+                b = _os.read(fd, 4096)
+            except OSError as e:
+                if e.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
+                    break
+                return '<read error: {}>'.format(e)
+            if not b:
+                break
+            chunks.append(b)
+            if len(chunks) > 1000:
+                break
+        return b''.join(chunks).decode('utf-8', 'replace')
+
+    @staticmethod
+    def _run_target_webserver(queue, hold_seconds):
+        """Serve one GET, optionally stalling for ``hold_seconds`` to
+        keep the run worker blocked on the fetch. Signals 'done' after
+        the single handled request.
+        """
+        class _SlowHandler(NoLogHandler):
+            def do_GET(self):
+                if hold_seconds:
+                    time.sleep(hold_seconds)
+                queue.put('done')
+                super().do_GET()
+        httpd = http.server.HTTPServer(('', 0), _SlowHandler)
+        try:
+            port = httpd.server_address[1]
+            queue.put(port)
+            httpd.handle_request()
+        finally:
+            httpd.server_close()
+
+    def _start_run_target(self, hold_seconds=0):
+        """Spawn the local feed webserver and return (proc, port, queue)."""
+        queue = multiprocessing.Queue()
+        proc = multiprocessing.Process(
+            target=self._run_target_webserver,
+            args=(queue, hold_seconds))
+        proc.start()
+        port = queue.get(timeout=10)
+        self.addCleanup(proc.join, 10)
+        self.addCleanup(proc.terminate)
+        return proc, port, queue
+
+    def test_add_name_with_space(self):
+        "A feed name containing a space is accepted and persisted"
+        status, location, _ = self._req(
+            'POST', '/add',
+            {'name': 'my feed', 'url': 'https://example.com/x.xml'})
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/')
+        status, _, body = self._req('GET', '/')
+        self.assertEqual(status, 200)
+        self.assertIn('<td>my feed</td>', body)
+        # Persisted to disk and visible to the CLI.
+        res = self.ctx.call('list')
+        self.assertEqual(res.returncode, 0)
+        self.assertIn('my feed', res.stdout)
+
+    def test_add_invalid_name_rejected_inline(self):
+        "A name with disallowed punctuation is rejected without a 500"
+        # '|' is not in the widened charset.
+        status, _, body = self._req(
+            'POST', '/add',
+            {'name': 'bad|name', 'url': 'https://example.com/x.xml'})
+        self.assertEqual(status, 200)
+        self.assertIn('Invalid feed name', body)
+        # And nothing was persisted.
+        res = self.ctx.call('list')
+        self.assertEqual(res.stdout.strip(), '')
+
+    def test_run_no_send_fetches(self):
+        "POST /run-no-send drives a background fetch of all feeds"
+        proc, port, queue = self._start_run_target(hold_seconds=0)
+        url = 'http://127.0.0.1:{}/disqus/feed.rss'.format(port)
+        self.ctx.call('add', 'test', url)
+        status, location, _ = self._req('POST', '/run-no-send')
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/')
+        # The fetch happens in a background thread; wait for it.
+        body = self._wait_for_run_done(timeout=30)
+        self.assertIn('class="badge-ok">ok', body)
+        # The local webserver must actually have been hit.
+        self.assertEqual(queue.get(timeout=5), 'done')
+
+    def test_run_concurrent_rejected(self):
+        "Clicking Run while a run is running is rejected inline"
+        # Hold the fetch for 2s so the first run is still running when
+        # the second POST lands.
+        proc, port, queue = self._start_run_target(hold_seconds=2)
+        url = 'http://127.0.0.1:{}/disqus/feed.rss'.format(port)
+        self.ctx.call('add', 'slow', url)
+        status, _, _ = self._req('POST', '/run-no-send')
+        self.assertEqual(status, 303)
+        # Immediately POST another run: must be rejected inline (200,
+        # not a redirect) with "already in progress".
+        status2, _, body2 = self._req('POST', '/run-no-send')
+        self.assertEqual(status2, 200)
+        self.assertIn('already in progress', body2)
+        # The page in run-in-progress mode hides the feeds table.
+        self.assertIn('unavailable while a run is in progress', body2)
+        # Now wait for the first run to finish.
+        self._wait_for_run_done(timeout=30)
+
+    def test_run_panel_present_on_empty_page(self):
+        "The run panel renders even with no feeds configured"
+        status, _, body = self._req('GET', '/')
+        self.assertEqual(status, 200)
+        self.assertIn('Run (send email)', body)
+        self.assertIn('Run (no send)', body)
+
 
 if __name__ == '__main__':
     unittest.main()

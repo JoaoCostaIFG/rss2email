@@ -140,6 +140,32 @@ def _make_message_id():
     return '<{}@{}>'.format(_uuid.uuid4(), host)
 
 
+# Characters allowed in the ``List-ID`` header's left-hand side, per
+# RFC 2919 (the ``<list-id-左>`` form): ASCII letters, digits, ``.``,
+# ``-``, and ``_``. Everything else in a feed name (spaces, punctuation,
+# non-ASCII) collapses to a single ``-`` so the header stays
+# syntactically valid without losing the feed's identity.
+_LIST_ID_SLUG_REGEXP = _re.compile(r'[^A-Za-z0-9._-]+')
+
+
+def _list_id_slug(name):
+    """Collapse a (possibly punctuation/space-rich) feed name for List-ID.
+
+    >>> _list_id_slug('my-feed')
+    'my-feed'
+    >>> _list_id_slug('my feed')
+    'my-feed'
+    >>> _list_id_slug("A & B's log!")
+    'A-B-s-log'
+    >>> _list_id_slug('Αθήνα')
+    'feed'
+    >>> _list_id_slug('   ')
+    'feed'
+    """
+    slug = _LIST_ID_SLUG_REGEXP.sub('-', name or '').strip('-')
+    return slug or 'feed'
+
+
 def _scrub_url_value(value):
     """Return ``value`` if its scheme is safe to embed, else the empty string.
 
@@ -251,13 +277,26 @@ class Feed (object):
     >>> feed.url
     'http://example.com/feed.atom'
 
-    Names can only contain letters, digits, and '._-'.  Here the
-    invalid space causes an exception:
+Names may contain letters, digits, ``._-``, spaces, and the common
+    punctuation ``() ! ? + & , ; : ' " @ / ~``.  Control characters,
+    newlines, ``[``, ``]`` (which would termininate a ``[feed.<name>]``
+    configparser section), and other punctuation are rejected:
 
-    >>> Feed(name='invalid name')
+    >>> Feed(name='in valid|name')
     Traceback (most recent call last):
       ...
-    rss2email.error.InvalidFeedName: invalid feed name 'invalid name'
+    rss2email.error.InvalidFeedName: invalid feed name 'in valid|name'
+    >>> Feed(name='bad[name]')
+    Traceback (most recent call last):
+      ...
+    rss2email.error.InvalidFeedName: invalid feed name 'bad[name]'
+
+    Spaces and the allowed punctuation are accepted:
+
+    >>> Feed(name="my feed")
+    <Feed my feed (None -> )>
+    >>> Feed(name="A & B's log!")
+    <Feed A & B's log! (None -> )>
 
     However, you aren't restricted to ASCII letters:
 
@@ -278,7 +317,14 @@ class Feed (object):
     >>> test_section = CONFIG.pop('feed.test-feed')
 
     """
-    _name_regexp = _re.compile(r'^[\w\d.-]+$')
+    # Keep this charset in sync with the doctest above. Spaces and a
+    # generous punctuation set are permitted; control characters, ``[``,
+    # and ``]`` are *not*, because ``]`` terminates a ``[feed.<name>]``
+    # configparser section header (see :class:`rss2email.config.Config`,
+    # which uses ``interpolation=None`` so ``%`` is harmless). The name
+    # also flows into the RFC-restricted ``List-ID`` mail header; that
+    # sink is sanitized separately by :func:`_list_id_slug`.
+    _name_regexp = _re.compile(r"^[\w\d.\- ()!?+&,;:'\"@/~]+$")
 
     # saved/loaded from feed.dat using __getstate__/__setstate__.
     _dynamic_attributes = [
@@ -667,7 +713,7 @@ class Feed (object):
                 ('Message-ID', message_id),
                 ('In-Reply-To', in_reply_to),
                 ('User-Agent', self.user_agent),
-                ('List-ID', '<{}.localhost>'.format(self.name)),
+                ('List-ID', '<{}.localhost>'.format(_list_id_slug(self.name))),
                 ('List-Post', 'NO (posting not allowed on this list)'),
                 ('X-RSS-Feed', self.url),
                 ('X-RSS-ID', guid),
