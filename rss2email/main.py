@@ -191,6 +191,7 @@ def run(*args, **kwargs):
     # subcommand runs a long-lived server, so it must not hold this
     # process-global lock (it would block the cron `r2e run` job for the
     # whole session); per-request Feeds instances handle datafile locking.
+    lockfile = None
     if args.func is not _command.web and UNIX:
         import fcntl as _fcntl
         from pathlib import Path as _Path
@@ -199,12 +200,20 @@ def run(*args, **kwargs):
             dir = _os.path.join("/tmp", "rss2email-{}".format(_os.getuid()))
             _Path(dir).mkdir(mode=0o700, parents=True, exist_ok=True)
         lockfile_path = _os.path.join(dir, "rss2email.lock")
-        lockfile = open(lockfile_path, "w")
-        _fcntl.lockf(lockfile, _fcntl.LOCK_EX)
+        # Open + lock in a nested try: if ``open`` or ``lockf`` raises
+        # (permission denied, disk full, NFS trouble), close any handle we
+        # did get and reset ``lockfile`` to None so the outer ``finally``
+        # below does not dereference an unbound name (which would mask
+        # the real ``OSError`` with an ``UnboundLocalError``).
+        try:
+            lockfile = open(lockfile_path, "w")
+            _fcntl.lockf(lockfile, _fcntl.LOCK_EX)
+        except OSError:
+            if lockfile is not None:
+                lockfile.close()
+            lockfile = None
+            raise
         _LOG.debug("acquired lock file {}".format(lockfile_path))
-    else:
-        # TODO: What to do on Windows?
-        lockfile = None
 
     feeds = None
     try:
