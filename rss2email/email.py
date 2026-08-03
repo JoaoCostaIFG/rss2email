@@ -524,7 +524,14 @@ def _flatten(message):
     try:
         generator.flatten(message)
     except UnicodeEncodeError as e:
-        # HACK: work around deficiencies in BytesGenerator
+        # HACK: work around deficiencies in BytesGenerator. The fallback
+        # below re-parses the message and compares the single body
+        # payload, which is meaningless for multipart (``get_payload(
+        # decode=True)`` returns None, so ``str(None, charset)`` would
+        # raise ``TypeError`` and mask the real ``UnicodeEncodeError``).
+        # Re-raise immediately for multipart; the hack can't help there.
+        if message.is_multipart():
+            raise
         _LOG.warning(e)
         charset = message.get_charset()
         charset_name = str(charset) if charset is not None else 'utf-8'

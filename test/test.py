@@ -405,6 +405,26 @@ def webserver_for_test_send(queue):
 class TestRunCommands(unittest.TestCase):
     "Exercise edge cases in the CLI dispatch (command.run, delete, ...)"
 
+    def test_flatten_reraises_unicode_error_for_multipart(self):
+        "_flatten must not swap the real UnicodeEncodeError for a TypeError"
+        # The fallback HACK in _flatten calls ``get_payload(decode=True)``
+        # which returns None for multipart, so ``str(None, charset)`` used
+        # to raise ``TypeError`` and mask the original ``UnicodeEncodeError``
+        # raised by ``BytesGenerator.flatten``. Force flatten to raise and
+        # assert the original exception propagates for a multipart message.
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        import unittest.mock as _mock
+        msg = MIMEMultipart('alternative')
+        msg.attach(MIMEText('plain', 'plain', 'us-ascii'))
+        msg.attach(MIMEText('<p>x</p>', 'html', 'us-ascii'))
+        real_err = UnicodeEncodeError('utf-8', '\udcff', 0, 1, 'reason')
+        with _mock.patch('rss2email.email._BytesGenerator.flatten',
+                         side_effect=real_err):
+            with self.assertRaises(UnicodeEncodeError) as cm:
+                _rss2email_email._flatten(msg)
+            self.assertIs(cm.exception, real_err)
+
     def test_smtp_send_rejects_whitespace_recipient(self):
         "A recipient that parses to no address raises instead of dropping mail"
         # ``_recipient_to_addrs('   ')`` returns ``[]``; passing that to
