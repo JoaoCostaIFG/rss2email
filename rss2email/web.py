@@ -202,26 +202,29 @@ def _render_run_block():
     parts.append(
         ' <form class="inline" method="post" action="/run-no-send">'
         '<button type="submit">Run (no send)</button></form>')
+    parts.append(
+        ' <form class="inline" method="post" action="/run-force-latest">'
+        '<button type="submit">Run (force latest)</button></form>')
     parts.append('<p>')
     if state['running']:
         started = state['started']
         parts.append(
             '<span class="badge-running">running</span> '
             '({}) since {}'.format(
-                'send' if state['send'] else 'no-send',
+                _run_kind_label(state),
                 _fmt_time(started)))
     elif state['status'] == 'ok':
         parts.append(
             'last run ({}) <span class="badge-ok">ok</span> '
             'started {}, finished {}'.format(
-                'send' if state['send'] else 'no-send',
+                _run_kind_label(state),
                 _fmt_time(state['started']),
                 _fmt_time(state['ended'])))
     elif state['status'] == 'error':
         parts.append(
             'last run ({}) <span class="badge-error">error</span> '
             'started {}, finished {}: {}'.format(
-                'send' if state['send'] else 'no-send',
+                _run_kind_label(state),
                 _fmt_time(state['started']),
                 _fmt_time(state['ended']),
                 _html.escape(state['error'] or '')))
@@ -240,6 +243,13 @@ def _fmt_time(ts):
     if ts is None:
         return '?'
     return _time.strftime('%Y-%m-%d %H:%M:%S', _time.localtime(ts))
+
+
+def _run_kind_label(state):
+    """Human label for the kind of run shown in the status badges."""
+    if state.get('force_latest'):
+        return 'force-latest' if state['send'] else 'force-latest, no-send'
+    return 'send' if state['send'] else 'no-send'
 
 
 def _render_index(feeds, error=None):
@@ -382,6 +392,7 @@ _RUN_TAIL_LINES = 200
 _RUN_STATE = {
     'running': False,
     'send': None,        # True = send run, False = --no-send run
+    'force_latest': False,  # True = --force-latest run
     'started': None,     # unix timestamp (float)
     'ended': None,       # unix timestamp (float)
     'status': None,      # 'ok' | 'error' | None
@@ -390,10 +401,11 @@ _RUN_STATE = {
 }
 
 
-def _reset_run_state(send):
+def _reset_run_state(send, force_latest=False):
     _RUN_STATE.update({
         'running': True,
         'send': send,
+        'force_latest': force_latest,
         'started': _time.time(),
         'ended': None,
         'status': None,
@@ -402,7 +414,7 @@ def _reset_run_state(send):
     })
 
 
-def _run_worker(send, configfiles, datafile_path):
+def _run_worker(send, force_latest, configfiles, datafile_path):
     """Background thread body: drive ``rss2email.command.run`` once.
 
     A throwaway logging handler captures the run's output into
@@ -439,7 +451,8 @@ def _run_worker(send, configfiles, datafile_path):
             datafile_path=datafile_path)
         feeds.load()
         try:
-            args = _Namespace(index=[], send=send, clean=False)
+            args = _Namespace(index=[], send=send, clean=False,
+                            force_latest=force_latest)
             _command.run(feeds=feeds, args=args)
             _RUN_STATE['status'] = 'ok'
         except Exception as e:
@@ -466,7 +479,7 @@ def _run_worker(send, configfiles, datafile_path):
         _RUN_STATE['ended'] = _time.time()
 
 
-def _start_run(send, configfiles, datafile_path):
+def _start_run(send, force_latest, configfiles, datafile_path):
     """Try to start a background run. Return ``None`` on success, else an
     error string explaining why it didn't start (already running)."""
     if not _RUN_GUARD.acquire(blocking=False):
@@ -474,12 +487,12 @@ def _start_run(send, configfiles, datafile_path):
     try:
         if _RUN_STATE['running']:
             return 'A run is already in progress. Wait for it to finish.'
-        _reset_run_state(send=send)
+        _reset_run_state(send=send, force_latest=force_latest)
     finally:
         _RUN_GUARD.release()
     t = _threading.Thread(
         target=_run_worker,
-        args=(send, configfiles, datafile_path),
+        args=(send, force_latest, configfiles, datafile_path),
         daemon=True)
     t.start()
     return None
@@ -569,6 +582,8 @@ def make_handler(configfiles, datafile_path, write_lock):
                         self._handle_run(send=True)
                     elif path == '/run-no-send':
                         self._handle_run(send=False)
+                    elif path == '/run-force-latest':
+                        self._handle_run(send=True, force_latest=True)
                     else:
                         self._redirect('/')
                 except _feeds_error_renderer as e:
@@ -639,7 +654,7 @@ def make_handler(configfiles, datafile_path, write_lock):
                 feeds.save_config()
             self._redirect('/')
 
-        def _handle_run(self, send):
+        def _handle_run(self, send, force_latest=False):
             # Kicking off a run does NOT touch the feeds list itself; it
             # spins up a background thread that opens its own ``Feeds``
             # instance (taking the datafile lockf just like a CLI
@@ -649,6 +664,7 @@ def make_handler(configfiles, datafile_path, write_lock):
             # rejection is what prevents the user from queuing work.
             err = _start_run(
                 send=send,
+                force_latest=force_latest,
                 configfiles=configfiles,
                 datafile_path=datafile_path)
             if err is not None:

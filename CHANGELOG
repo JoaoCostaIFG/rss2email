@@ -1,4 +1,9 @@
 UNRELEASED
+    * Add `r2e run --force-latest`: force sending the most recent entry of
+      each feed even if it has already been seen (sent as a fresh, standalone
+      email with no threading). Handy for testing delivery end-to-end. The
+      web UI gained a matching "Run (force latest)" button next to the
+      existing run buttons.
     * Fix IMAP sending: `imap_send` referenced `imaplib.Time2internaldate`,
       which doesn't exist (the stdlib name is `Time2Internaldate`), so every
       IMAP append raised `AttributeError` before reaching the server. Also

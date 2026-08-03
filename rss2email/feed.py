@@ -567,12 +567,21 @@ Names may contain letters, digits, ``._-``, spaces, and the common
         f = _util.TimeLimitedFunction('feed {}'.format(self.name), timeout, _feedparser.parse)
         return f(self.url, self.etag, modified=self.modified, agent=self.user_agent, **kwargs)
 
-    def _process(self, parsed):
+    def _process(self, parsed, force_latest=False):
         _LOG.info('process {}'.format(self))
         self._check_for_errors(parsed)
+        # The feedparser ``entries`` list is newest-last, so we iterate it
+        # in reverse; the very first yielded entry is therefore the most
+        # recent one in the feed. Track that so ``--force-latest`` can
+        # target exactly one entry per feed regardless of how many unseen
+        # entries follow it.
+        first = True
         for entry in reversed(parsed.entries):
             _LOG.debug('processing {}'.format(entry.get('id', 'no-id')))
-            processed = self._process_entry(parsed=parsed, entry=entry)
+            force = force_latest and first
+            processed = self._process_entry(
+                parsed=parsed, entry=entry, force=force)
+            first = False
             if processed:
                 guid, new_state, sender, message = processed
                 if self.post_process:
@@ -695,7 +704,7 @@ Names may contain letters, digits, ``._-``, spaces, and the common
                 return default
             raise
 
-    def _process_entry(self, parsed, entry) -> Optional[Tuple[str, Dict[str, Any], str, Message]]:
+    def _process_entry(self, parsed, entry, force=False) -> Optional[Tuple[str, Dict[str, Any], str, Message]]:
         guid = self._get_uid_for_entry(entry)
         new_hash = self._get_entry_hash(entry)
 
@@ -703,6 +712,14 @@ Names may contain letters, digits, ``._-``, spaces, and the common
         if old_state is None:
             _LOG.debug('not seen {}'.format(guid))
             new_state = {} # type: Dict[str, Any]
+        elif force:
+            # ``--force-latest`` requested a re-send of the most recent
+            # entry even though we've already mailed it. Treat it as
+            # brand-new: a fresh ``new_state`` (no ``In-Reply-To``
+            # threading) so the message arrives as a standalone email.
+            _LOG.debug('force sending {}'.format(guid))
+            new_state = {}
+            old_state = None
         else:
             _LOG.debug('already seen {}'.format(guid))
             if 'old' in old_state:
@@ -1149,7 +1166,7 @@ Names may contain letters, digits, ``._-``, spaces, and the common
         _email.send(recipient=self.to, message=message,
                     config=self.config, section=section)
 
-    def run(self, send=True, clean=False):
+    def run(self, send=True, clean=False, force_latest=False):
         """Fetch and process the feed, mailing entry emails.
 
         >>> feed = Feed(
@@ -1189,7 +1206,7 @@ Names may contain letters, digits, ``._-``, spaces, and the common
                 seen = []
                 sender = None  # bound here so the post-loop send can't read a
                                # loop-variable leak when ``seen`` is empty.
-                for (guid, state, sender, message) in self._process(parsed):
+                for (guid, state, sender, message) in self._process(parsed, force_latest=force_latest):
                     _LOG.debug('new message: {}'.format(message['Subject']))
                     seen.append((guid, state))
                     self._append_to_digest(digest=digest, message=message)
@@ -1212,7 +1229,7 @@ Names may contain letters, digits, ``._-``, spaces, and the common
                     for (guid, state) in seen:
                         self.seen[guid] = state
             else:
-                for (guid, state, sender, message) in self._process(parsed):
+                for (guid, state, sender, message) in self._process(parsed, force_latest=force_latest):
                     _LOG.debug('new message: {}'.format(message['Subject']))
                     if send:
                         self._send(sender=sender, message=message)

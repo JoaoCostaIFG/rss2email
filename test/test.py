@@ -492,7 +492,7 @@ class TestRunCommands(unittest.TestCase):
             url = 'http://old.example.com/feed'
             name = 'stub'
             _config_dirty = False
-            def run(self, send=True, clean=False):
+            def run(self, send=True, clean=False, force_latest=False):
                 self.url = 'http://new.example.com/feed'
                 self._config_dirty = True
 
@@ -501,7 +501,8 @@ class TestRunCommands(unittest.TestCase):
         feeds.save_config = lambda: persisted_config.append(True)
         err = OSError('disk full')
         feeds.save_feeds = lambda: (_ for _ in ()).throw(err)
-        args = _types.SimpleNamespace(index=[0], send=False, clean=False)
+        args = _types.SimpleNamespace(index=[0], send=False, clean=False,
+                                 force_latest=False)
         with self.assertRaises(OSError) as cm:
             _rss2email_command.run(feeds=feeds, args=args)
         self.assertIs(cm.exception, err)

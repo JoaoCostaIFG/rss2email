@@ -36,7 +36,7 @@ class TestPostProcess(unittest.TestCase):
         # to exercise the post-process plumbing.
         feed._check_for_errors = lambda parsed: None
 
-        def fake_process_entry(parsed, entry):
+        def fake_process_entry(parsed, entry, force=False):
             original = Message()
             original['Subject'] = 'original'
             original.set_payload('original body')

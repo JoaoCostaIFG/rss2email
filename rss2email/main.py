@@ -115,6 +115,11 @@ def run(*args, **kwargs):
         '--clean', action='store_true',
         help='clean old feed entries')
     run_parser.add_argument(
+        '--force-latest', dest='force_latest', action='store_true',
+        default=False,
+        help='force sending the most recent entry of each feed, '
+             'even if it has already been seen')
+    run_parser.add_argument(
         'index', nargs='*',
         help='feeds to fetch (defaults to fetching all feeds)')
 
