@@ -492,6 +492,32 @@ class TestRunCommands(unittest.TestCase):
             listing = ctx.call("list")
             self.assertEqual(listing.stdout.strip(), '')
 
+    def test_corrupt_json_datafile_is_not_reported_as_a_pickle(self):
+        "A truncated JSON datafile reports JSON corruption, not pickle"
+        # rss2email datafiles are JSON and begin with '{'. A corrupt one
+        # used to fall through ``except ValueError`` into the legacy-pickle
+        # loader, which raised a DataFileError telling the user to set
+        # R2E_LEGACY_PICKLE=1 -- a misleading message (the file isn't a
+        # pickle). Now JSON-shaped corruption is reported as JSON corruption.
+        import tempfile
+        tmpdir = tempfile.TemporaryDirectory(prefix='r2e-json-')
+        self.addCleanup(tmpdir.cleanup)
+        data_path = Path(tmpdir.name) / 'rss2email.json'
+        # Truncated JSON: starts with '{' so it's JSON-shaped, but
+        # json.load raises.
+        data_path.write_text('{"version": 2, "feeds": [')
+        cfg = _rss2email_config.Config()
+        cfg.read_dict(_rss2email_config.CONFIG)
+        feeds = _rss2email_feeds.Feeds(
+            configfiles=[], datafile_path=str(data_path), config=cfg)
+        with self.assertRaises(_rss2email_error.DataFileError) as cm:
+            feeds.load()
+        msg = str(cm.exception)
+        self.assertIn('JSON', msg)
+        self.assertIn('corrupt', msg)
+        self.assertNotIn('R2E_LEGACY_PICKLE', msg)
+        feeds.close()
+
 
 class TestSend(unittest.TestCase):
     "Send email using the various email-protocol choices"

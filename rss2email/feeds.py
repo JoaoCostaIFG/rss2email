@@ -269,9 +269,33 @@ class Feeds (list):
         self.clear()
 
         feeds = []
+        # Distinguish a genuinely legacy (pickled) data file from a
+        # corrupt JSON one. rss2email writes JSON files that always
+        # begin with ``{``. A pickle stream begins with a different
+        # byte (``\x80`` for protocol >=2, ``(``/other text opcodes for
+        # protocol 0). Without this check, a truncated/corrupt JSON
+        # file fell through ``except ValueError`` into the pickle
+        # fallback, which raised a DataFileError instructing the user
+        # to set ``R2E_LEGACY_PICKLE=1`` -- a misleading message about
+        # pickle when the real problem was JSON corruption.
+        try:
+            with open(self.datafile_path, 'rb') as _fp:
+                _head = _fp.read(1)
+        except OSError:
+            _head = b''
+        _looks_like_json = _head.startswith(b'{')
         try:
             data = _json.load(self.datafile)
-        except ValueError:
+        except ValueError as _json_err:
+            if _looks_like_json:
+                raise _error.DataFileError(
+                    feeds=self,
+                    message=(
+                        'feed data file {} could not be parsed as JSON '
+                        '({}); the file appears corrupt. Restore it from '
+                        'a backup, or delete it to start fresh (this will '
+                        'lose your seen-entry state).'.format(
+                            self.datafile_path, _json_err))) from _json_err
             _LOG.info('could not load data file using JSON')
             data = self._load_pickled_data(self.datafile)
         version = data.get('version', None)
