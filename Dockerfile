@@ -6,8 +6,13 @@
 # read-only root filesystem. Only the bind-mounted /data directory and
 # a tmpfs /tmp are writable, so a compromised rss2email process cannot
 # modify the image or the host outside the mount.
+#
+# Alpine (musl + busybox) instead of Debian slim: rss2email and its
+# dependencies are pure Python, so the interpreter is the only native
+# component, and the minimal musl/busybox userland keeps the CVE
+# surface (and image size) far below a Debian-based image.
 
-FROM python:3.12-slim
+FROM python:3.12-alpine
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -16,18 +21,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Apply Debian security updates released since the base image snapshot
-# was cut: the python:*-slim images are only rebuilt every few weeks, so
-# without this the image inherits whatever vulnerable packages were
-# current on the day Docker Hub last rebuilt the base. Cache mounts keep
-# the apt lists/archives (and their metadata) out of the image layers.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update \
- && apt-get -y upgrade
+# Apply Alpine security updates released since the base image snapshot
+# was cut, so rebuilds pick up musl/busybox fixes without waiting for
+# the python:*-alpine image itself to be refreshed. Cache mounts keep
+# the apk cache (and its metadata) out of the image layers.
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk upgrade --no-cache
 
 # Install uv (used for dependency resolution and installation).
-COPY --from=ghcr.io/astral-sh/uv:0.8.4 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh-uv:0.8.4 /uv /usr/local/bin/uv
 
 # Install the application and its declared runtime dependencies. We
 # install from the local source tree (rather than `uv sync` after
@@ -39,19 +41,21 @@ COPY r2e ./r2e
 COPY r2e.1 ./
 COPY completion ./completion
 COPY README.rst AUTHORS CHANGELOG COPYING ./
-# The uv cache is mounted as a BuildKit cache rather than left in the
-# layer, so it speeds up rebuilds without shipping /root/.cache/uv
-# (setuptools, wheels, ...) inside the final image.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project \
  && uv sync --frozen --no-dev
 
+# The base image's pip is never used at runtime (uv manages the venv,
+# which itself contains no pip); remove it -- and ensurepip's bundled
+# wheel copies -- so their CVEs don't count against the image.
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+           /usr/local/lib/python3.12/ensurepip
+
 # Create an unprivileged, non-login user with a fixed UID/GID so the
 # bind-mounted data directory can be owned consistently between the
 # host and the container regardless of the image's build environment.
-RUN groupadd --gid 1000 rss2email \
- && useradd  --uid 1000 --gid rss2email \
-             --home-dir /data --shell /usr/sbin/nologin --no-create-home rss2email
+RUN addgroup -g 1000 rss2email \
+ && adduser  -u 1000 -G rss2email -H -h /data -s /sbin/nologin -D rss2email
 
 # Pre-create and pre-own the XDG data directories. Docker copies
 # ownership (and contents) from the image path into a freshly-attached
