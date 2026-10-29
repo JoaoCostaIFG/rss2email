@@ -16,6 +16,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Apply Debian security updates released since the base image snapshot
+# was cut: the python:*-slim images are only rebuilt every few weeks, so
+# without this the image inherits whatever vulnerable packages were
+# current on the day Docker Hub last rebuilt the base. Cache mounts keep
+# the apt lists/archives (and their metadata) out of the image layers.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+ && apt-get -y upgrade
+
 # Install uv (used for dependency resolution and installation).
 COPY --from=ghcr.io/astral-sh/uv:0.8.4 /uv /usr/local/bin/uv
 
@@ -29,7 +39,11 @@ COPY r2e ./r2e
 COPY r2e.1 ./
 COPY completion ./completion
 COPY README.rst AUTHORS CHANGELOG COPYING ./
-RUN uv sync --frozen --no-dev --no-install-project \
+# The uv cache is mounted as a BuildKit cache rather than left in the
+# layer, so it speeds up rebuilds without shipping /root/.cache/uv
+# (setuptools, wheels, ...) inside the final image.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project \
  && uv sync --frozen --no-dev
 
 # Create an unprivileged, non-login user with a fixed UID/GID so the
