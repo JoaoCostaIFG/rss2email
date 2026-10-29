@@ -28,13 +28,13 @@ WORKDIR /app
 RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     apk upgrade --no-cache
 
-# Install uv (used for dependency resolution and installation).
-COPY --from=ghcr.io/astral-sh-uv:0.8.4 /uv /usr/local/bin/uv
-
-# Install the application and its declared runtime dependencies. We
-# install from the local source tree (rather than `uv sync` after
-# copying everything) so a change to the lockfile invalidates only the
-# expensive dependency-resolution layer, not the source copy.
+# Install the application and its declared runtime dependencies.
+# uv itself is installed from its pinned PyPI wheel -- the same
+# registry the dependencies are resolved from, so the build depends
+# on a single external registry -- and removed again at the end of
+# the same layer: it is a build-time tool only, and deleting it in a
+# separate layer would leave the bytes (and the wheel's CVE metadata)
+# in the image. pip/uv cache mounts keep rebuilds fast.
 COPY pyproject.toml uv.lock ./
 COPY rss2email ./rss2email
 COPY r2e ./r2e
@@ -42,13 +42,13 @@ COPY r2e.1 ./
 COPY completion ./completion
 COPY README.rst AUTHORS CHANGELOG COPYING ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project \
- && uv sync --frozen --no-dev
-
-# The base image's pip is never used at runtime (uv manages the venv,
-# which itself contains no pip); remove it -- and ensurepip's bundled
-# wheel copies -- so their CVEs don't count against the image.
-RUN rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+    --mount=type=cache,target=/root/.cache/pip \
+    pip install uv==0.8.4 \
+ && uv sync --frozen --no-dev --no-install-project \
+ && uv sync --frozen --no-dev \
+ && rm -rf /usr/local/bin/uv \
+           /usr/local/lib/python3.12/site-packages/uv* \
+           /usr/local/lib/python3.12/site-packages/pip* \
            /usr/local/lib/python3.12/ensurepip
 
 # Create an unprivileged, non-login user with a fixed UID/GID so the
