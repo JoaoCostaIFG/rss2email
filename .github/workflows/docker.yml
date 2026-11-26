@@ -21,6 +21,11 @@ on:
       - "rss2email/**"
       - "r2e"
       - ".github/workflows/docker.yml"
+  # Manual trigger: rebuilds the image even when nothing under the
+  # paths above changed. Used to pick up security updates that shipped
+  # to the Alpine repos after the last build (the `apk upgrade` layer
+  # in the Dockerfile only applies them at build time).
+  workflow_dispatch:
 
 permissions:
   contents: read
